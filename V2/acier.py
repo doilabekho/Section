@@ -13,6 +13,11 @@ from matplotlib.path import Path
 from scipy.spatial import Delaunay
 import matplotlib.pyplot as plt
 @func
+def sgn(x):
+	# renvoie signe 1 / -1
+	return np.where(x <0, -1 ,1)
+
+@func
 def sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_s_array):
     """renvoie la contrainte acier (fe500 classe B) selon 3.2.7 de NF EN 1992-1-1"""
     eps_s =np.array(eps_s_array)
