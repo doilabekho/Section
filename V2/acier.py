@@ -21,10 +21,10 @@ def sgn(x):
 def sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_s_array):
     """renvoie la contrainte acier (fe500 classe B) selon 3.2.7 de NF EN 1992-1-1"""
     eps_s =np.array(eps_s_array)
-    eps_sd = fyd / 200000 * 1000 
+    eps_sd = fyd / 20000 * 1000 
 
     
-    sigma1 = 200000 * eps_s / 1000 # if abs(eps_s) <= eps_sd:
+    sigma1 = 20000 * eps_s / 1000 # if abs(eps_s) <= eps_sd:
    
     sigma2 = sgn(eps_s)* (fyd + (k * fyd - fyd)/(eps_uk - eps_sd) * (np.abs(eps_s) - eps_sd)) #  else:   
     return  np.where(np.abs(eps_s) > eps_sd, sigma2, sigma1)	
@@ -45,7 +45,7 @@ def eps_s_palier(fyd, k, eps_uk, eps_ud, sig_s_array):
     sig_s_array : tableau des contraintes (MPa)
     """
     sig = np.asarray(sig_s_array)
-    Es = 200000
+    Es = 20000
     eps_sd = (fyd / Es) * 1000
     
     # Préparation des paramètres de la pente plastique
