@@ -124,3 +124,32 @@ def epsilon_c_pararect(fck, fcd, sig_c_array):
     resultat = np.select([sig <= 0, sig >= fcd], [0.0, e2], default=epsilon)
     
     return resultat
+	@func
+def sigma_c_n1(eps_c, n):
+    """
+    Loi béton fissuré. 
+    Utilise une fonction de transfert pour annuler la traction sans np.where.
+    """
+    eps = np.asarray(eps_c)
+    eps_abs = np.abs(eps)
+    
+    # Le terme (eps + eps_abs) / (2 * eps_abs + 1e-15) agit comme un filtre :
+    # Si eps > 0  => (eps + eps) / (2 * eps) = 1
+    # Si eps < 0  => (eps - eps) / (2 * eps) = 0
+    # Le 1e-15 est le "garde-fou" contre la division par zéro.
+    
+    filtre = (eps + eps_abs) / (2 * eps_abs + 1e-30)
+    sigma = (200000 / n * eps / 1000) * filtre
+    return sigma
+
+
+
+@func
+def sigma_c_pararect1(fck, fcd, eps_c_array):
+    eps_c=np.array(eps_c_array)
+    eps_c2_val = eps_c2(fck)
+    eps_n_val = eps_n(fck)
+    term1 = np.abs(1 - eps_c / eps_c2_val)
+    term2 = (1 - eps_c / eps_c2_val)
+    sigma = fcd * (1 - (term1 + term2) / (2 * term1 + 1e-30) * term1 ** eps_n_val) * (eps_c + np.abs(eps_c)) / (2 * np.abs(eps_c) + 1e-30)
+    return sigma
