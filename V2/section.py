@@ -15,7 +15,7 @@ from scipy.spatial import Delaunay
 import matplotlib.pyplot as plt
 
 from beton import *   # ← fonctionne en local et sur GitHub
-	
+from acier import *   # ← fonctionne en local et sur GitHub	
 
 
 
