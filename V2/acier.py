@@ -113,7 +113,7 @@ def sigma_s_lin1(eps_s, a_com):
     """
     eps = np.asarray(eps_s)
     # Calcul de la contrainte de base (E = 200 000 MPa)
-    sig_base = 200000 * eps / 1000
+    sig_base = 20000 * eps / 1000
     
     # On multiplie par a_com uniquement là où eps_s > 0
     return np.where(eps > 0.0, sig_base * a_com, sig_base)
