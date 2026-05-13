@@ -1,5 +1,4 @@
 # Module pour les propriétés et calculs du béton
-# beton.py
 import datetime as dt
 import numpy as np
 import pandas as pd
