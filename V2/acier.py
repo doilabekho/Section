@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 @func
 def sgn(x):
 	# renvoie signe 1 / -1
-	return np.where(x <0, -1 ,1)
+	return np.where(x <0, -10 ,10)
 
 @func
 def sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_s_array):
