@@ -14,7 +14,7 @@ from matplotlib.path import Path
 from scipy.spatial import Delaunay
 import matplotlib.pyplot as plt
 
-
+from beton import *   # ← fonctionne en local et sur GitHub
 	
 @func
 def sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_s_array):
