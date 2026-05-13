@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 @func
 def sgn(x):
 	# renvoie signe 1 / -1
-	return np.where(x <0, -10 ,10)
+	return np.where(x <0, -1 ,1)
 @func		
 def eps_c2(fck_array):
     """Renvoie la déformation eps_c2 selon tableau 3.1 de NF EN 1992-1-1, en mm/m"""
