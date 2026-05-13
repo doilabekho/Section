@@ -15,16 +15,16 @@ import matplotlib.pyplot as plt
 @func
 def sgn(x):
 	# renvoie signe 1 / -1
-	return np.where(x <0, -10 ,10)
+	return np.where(x <0, -1 ,1)
 
 @func
 def sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_s_array):
     """renvoie la contrainte acier (fe500 classe B) selon 3.2.7 de NF EN 1992-1-1"""
     eps_s =np.array(eps_s_array)
-    eps_sd = fyd / 20000 * 1000 
+    eps_sd = fyd / 200000 * 1000 
 
     
-    sigma1 = 20000 * eps_s / 1000 # if abs(eps_s) <= eps_sd:
+    sigma1 = 200000 * eps_s / 1000 # if abs(eps_s) <= eps_sd:
    
     sigma2 = sgn(eps_s)* (fyd + (k * fyd - fyd)/(eps_uk - eps_sd) * (np.abs(eps_s) - eps_sd)) #  else:   
     return  np.where(np.abs(eps_s) > eps_sd, sigma2, sigma1)	
@@ -45,7 +45,7 @@ def eps_s_palier(fyd, k, eps_uk, eps_ud, sig_s_array):
     sig_s_array : tableau des contraintes (MPa)
     """
     sig = np.asarray(sig_s_array)
-    Es = 20000
+    Es = 200000
     eps_sd = (fyd / Es) * 1000
     
     # Préparation des paramètres de la pente plastique
@@ -113,7 +113,7 @@ def sigma_s_lin1(eps_s, a_com):
     """
     eps = np.asarray(eps_s)
     # Calcul de la contrainte de base (E = 200 000 MPa)
-    sig_base = 20000 * eps / 1000
+    sig_base = 200000 * eps / 1000
     
     # On multiplie par a_com uniquement là où eps_s > 0
     return np.where(eps > 0.0, sig_base * a_com, sig_base)
