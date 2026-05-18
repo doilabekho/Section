@@ -515,7 +515,7 @@ def S_com(polygon1, evi, eps0, alpha, beta):
     if contour_cg is None:
         return 0.0
 
-    contour_cg = nettoyer_polygone(contour_cg)
+    #contour_cg = nettoyer_polygone(contour_cg)
     # On réutilise _integrer_polygone en mode ELS avec C=1
     # (S_com = ∬ 1 dA sur zone comprimée, indépendant de la loi)
     res_c = _integrer_polygone(contour_cg, eps0, alpha, beta, 'ELS', C=1.0)
@@ -551,7 +551,7 @@ def calculer_N_My_Mz(
 
     C = 200000.0 / (float(n) * 1000.0)
 
-    contour_cg = nettoyer_polygone(contour_cg)
+    #contour_cg = nettoyer_polygone(contour_cg)
     res_c = _integrer_polygone(contour_cg, eps0, alpha, beta, 'ELS', C=C)
 
     res_v = np.zeros(4)
@@ -667,7 +667,7 @@ def calculer_N_My_Mz_ELU_pararect(
 
     e2 = float(eps_c2(fck))
 
-    contour_cg = nettoyer_polygone(contour_cg)
+    #contour_cg = nettoyer_polygone(contour_cg)
     res_c = _integrer_polygone(contour_cg, eps0, alpha, beta,
                                'ELU', fcd=fcd, e2=e2)
     res_v = np.zeros(4)
