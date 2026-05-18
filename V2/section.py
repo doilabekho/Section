@@ -22,7 +22,6 @@ from acier import *   # ← fonctionne en local et sur GitHub
 
 
 
-
 # ═══════════════════════════════════════════════════════════════
 # BLOC 1 — UTILITAIRES GÉOMÉTRIQUES
 # ═══════════════════════════════════════════════════════════════
@@ -254,238 +253,185 @@ def aire_et_centre(data):
 #
 # où I0 = ∫₀¹ σ/fcd ds,  I1 = ∫₀¹ σ/fcd · s ds
 # ═══════════════════════════════════════════════════════════════
-import numpy as np
-
-# ═══════════════════════════════════════════════════════════════
-# BLOC 2 — NOYAU GREEN ANALYTIQUE EXACT (VERSION RIGOUREUSE)
-# ═══════════════════════════════════════════════════════════════
-#
-# Théorème de Green :
-# ∬ f(x,y) dA = ∮ Q(x,y) dy avec Q(x,y)=∫₀ˣ f(ξ,y)dξ
-#
-# → Toutes les intégrales sont traitées rigoureusement
-# → Compatible BA (ELS / ELU)
-# → Exact pour N, My, Mz
-#
-# Aire :
-#   A = ∮ x dy
-#
-# Moments :
-#   ∫ y dA = ∮ x y dy
-#   ∫ x dA = ∮ x²/2 dy
-#
-# ═══════════════════════════════════════════════════════════════
-
 
 def _aire_signee(pts):
-    """Aire signée (shoelace)."""
+    """Aire signée — Shoelace. + = CCW (trigonométrique), - = CW."""
     a = 0.0
     n = len(pts)
     for i in range(n):
         x1, y1 = pts[i]
         x2, y2 = pts[(i+1) % n]
         a += x1*y2 - x2*y1
-    return 0.5 * a
+    return 0.5*a
 
 
 def _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, seuils):
-
+    """
+    Découpe l'arête en sous-segments homogènes.
+    seuils : liste des valeurs de ε aux frontières (ex: [0.0, e2])
+    Retourne liste de (x1,y1,x2,y2,zone_id) où zone_id est l'indice
+    du seuil dépassé (0=avant seuil[0], 1=entre [0] et [1], 2=après [1]).
+    """
     ea = eps0 + alpha*xa + beta*ya
     eb = eps0 + alpha*xb + beta*yb
 
     cuts = [0.0]
     de = eb - ea
-
     for s in seuils:
         if abs(de) > 1e-15:
             t = (s - ea) / de
             if 1e-12 < t < 1.0 - 1e-12:
                 cuts.append(t)
-
     cuts.append(1.0)
     cuts = sorted(set(cuts))
 
     segments = []
-
     for k in range(len(cuts)-1):
         t1, t2 = cuts[k], cuts[k+1]
-
-        x1 = xa + t1*(xb-xa)
-        y1 = ya + t1*(yb-ya)
-        x2 = xa + t2*(xb-xa)
-        y2 = ya + t2*(yb-ya)
-
-        e1 = eps0 + alpha*x1 + beta*y1
-        e2 = eps0 + alpha*x2 + beta*y2
-
-        segments.append((x1, y1, x2, y2, e1, e2))
-
+        tm = 0.5*(t1+t2)
+        x1 = xa + t1*(xb-xa);  y1 = ya + t1*(yb-ya)
+        x2 = xa + t2*(xb-xa);  y2 = ya + t2*(yb-ya)
+        em = ea + tm*(eb-ea)
+        segments.append((x1, y1, x2, y2, em))
     return segments
 
 
-# ═══════════════════════════════════════════════════════════════
-# CONTRIBUTIONS EXACTES — GREEN
-# ═══════════════════════════════════════════════════════════════
-
-def _geom_integrals(x1, y1, x2, y2):
-    """Intégrales géométriques exactes via Green."""
-    dx = x2 - x1
-    dy = y2 - y1
-
-    A  = dy * (x1 + dx/2.0)
-    My = dy * (x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0)
-    Mz = dy * (x1**2/2.0 + x1*dx/2.0 + dx**2/6.0)
-
-    return A, My, Mz
-
-
-# ──────────────────────────────────────────────────────────────
-# ELS (σ = C·ε)
-# ──────────────────────────────────────────────────────────────
 def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
+    """
+    Contribution EXACTE ELS d'un sous-segment à [N, My, Mz, Scom].
+    σ = C·ε  (zone C uniquement — appelé seulement si ε_mid > 0).
 
-    dx = x2 - x1
-    dy = y2 - y1
-
+    N  = C·Δy·(εa + Δε/2)
+    My = C·Δy·[εa·y1 + (εa·Δy + y1·Δε)/2 + Δε·Δy/3]
+    Mz = C·Δy·[εa·x1 + (εa·Δx + x1·Δε)/2 + Δε·Δx/3]
+    Sc = Δy·(x1 + Δx/2)
+    """
+    dx = x2-x1;  dy = y2-y1
     if abs(dy) < 1e-15:
         return np.zeros(4)
 
-    ea = eps0 + alpha*x1 + beta*y1
-    eb = eps0 + alpha*x2 + beta*y2
-    de = eb - ea
+    ea  = eps0 + alpha*x1 + beta*y1
+    eb  = eps0 + alpha*x2 + beta*y2
+    de  = eb - ea   # Δε
 
-    # ✅ INTÉGRALES AVEC x (Green correct)
-
-    N_ = C * dy * (
-        ea*x1
-        + (ea*dx + x1*de)/2.0
-        + de*dx/3.0
-    )
-
-    My_ = C * dy * (
-        ea*x1*y1
-        + (ea*(x1*dy + y1*dx) + de*x1*y1)/2.0
-        + de*(x1*dy + y1*dx)/3.0
-    )
-
-    Mz_ = C * dy * (
-        ea*(x1**2/2.0)
-        + (ea*x1*dx + de*(x1**2)/2.0)/2.0
-        + de*(x1*dx)/3.0
-    )
-
+    N_  = C * dy * (ea + de/2.0)
+    My_ = C * dy * (ea*y1 + (ea*dy + y1*de)/2.0 + de*dy/3.0)
+    Mz_ = C * dy * (ea*x1 + (ea*dx + x1*de)/2.0 + de*dx/3.0)
     Sc_ = dy * (x1 + dx/2.0)
 
-    return np.array([N_, My_, Mz_])
+    return np.array([N_, My_, Mz_, Sc_])
 
-
-# ──────────────────────────────────────────────────────────────
-# ELU — zone R (σ = fcd)
-# ──────────────────────────────────────────────────────────────
 
 def _contrib_ELU_R_exact(x1, y1, x2, y2, fcd):
+    """
+    Contribution EXACTE ELU zone R (σ=fcd) à [N, My, Mz, Scom].
 
-    A, My_g, Mz_g = _geom_integrals(x1, y1, x2, y2)
+    N  = fcd·Δy
+    My = fcd·Δy·(y1 + Δy/2)
+    Mz = fcd·Δy·(x1 + Δx/2)
+    Sc = Δy·(x1 + Δx/2)
+    """
+    dx = x2-x1;  dy = y2-y1
+    if abs(dy) < 1e-15:
+        return np.zeros(4)
 
-    N_  = fcd * A
-    My_ = fcd * My_g
-    Mz_ = fcd * Mz_g
-    Sc_ = A
+    N_  = fcd * dy
+    My_ = fcd * dy * (y1 + dy/2.0)
+    Mz_ = fcd * dy * (x1 + dx/2.0)
+    Sc_ = dy * (x1 + dx/2.0)
 
     return np.array([N_, My_, Mz_, Sc_])
 
-
-# ──────────────────────────────────────────────────────────────
-# ELU — zone P (parabole)
-# ──────────────────────────────────────────────────────────────
 
 def _contrib_ELU_P_exact(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2):
+    """
+    Contribution EXACTE ELU zone P (σ=fcd·(2u-u²), u=ε/e2)
+    à [N, My, Mz, Scom].
 
-    ea = eps0 + alpha*x1 + beta*y1
-    eb = eps0 + alpha*x2 + beta*y2
+    u(s) = ua + s·Δu  sur s∈[0,1]
+    σ(s)/fcd = 2u - u²
+             = 2(ua+Δu·s) - (ua+Δu·s)²
+             = (2ua-ua²) + (2Δu-2ua·Δu)·s - Δu²·s²
 
-    ua = ea / e2
-    ub = eb / e2
-    du = ub - ua
+    Posons :
+      I0 = ∫₀¹ σ/fcd ds = (2ua-ua²) + (2Δu-2ua·Δu)/2 - Δu²/3
+         = 2ua - ua² + Δu - ua·Δu - Δu²/3
+
+      I1 = ∫₀¹ σ/fcd · s ds
+         = (2ua-ua²)/2 + (2Δu-2ua·Δu)/3 - Δu²/4
+
+    N  = fcd·Δy·I0
+    My = fcd·Δy·(y1·I0 + Δy·I1)
+    Mz = fcd·Δy·(x1·I0 + Δx·I1)
+    Sc = Δy·(x1 + Δx/2)   [aire comprimée, indépendant de la loi]
+    """
+    dx = x2-x1;  dy = y2-y1
+    if abs(dy) < 1e-15:
+        return np.zeros(4)
+
+    ea  = eps0 + alpha*x1 + beta*y1
+    eb  = eps0 + alpha*x2 + beta*y2
+    ua  = ea / e2
+    ub  = eb / e2
+    du  = ub - ua   # Δu
 
     I0 = 2*ua - ua**2 + du - ua*du - du**2/3.0
+    I1 = (2*ua - ua**2)/2.0 + (2*du - 2*ua*du)/3.0 - du**2/4.0
 
-    A, My_g, Mz_g = _geom_integrals(x1, y1, x2, y2)
-
-    N_  = fcd * A * I0
-    My_ = fcd * My_g * I0
-    Mz_ = fcd * Mz_g * I0
-    Sc_ = A
+    N_  = fcd * dy * I0
+    My_ = fcd * dy * (y1*I0 + dy*I1)
+    Mz_ = fcd * dy * (x1*I0 + dx*I1)
+    Sc_ = dy * (x1 + dx/2.0)
 
     return np.array([N_, My_, Mz_, Sc_])
 
-
-# ═══════════════════════════════════════════════════════════════
-# INTÉGRATEUR GLOBAL
-# ═══════════════════════════════════════════════════════════════
 
 def _integrer_polygone(vertices, eps0, alpha, beta,
                        mode, C=None, fcd=None, e2=None):
+    """
+    Intègre [N, My, Mz, Scom] sur un polygone par Green analytique EXACT.
 
+    mode = 'ELS' : loi linéaire béton fissuré
+    mode = 'ELU' : loi parabole-rectangle n=2
+
+    Correction automatique du signe selon sens de saisie (CCW ou CW).
+    """
     pts = np.asarray(vertices, dtype=float)
-    n = len(pts)
-
+    n   = len(pts)
     if n < 3:
         return np.zeros(4)
 
     res = np.zeros(4)
 
     for i in range(n):
-
         xa, ya = pts[i]
         xb, yb = pts[(i+1) % n]
 
         if mode == 'ELS':
-
-            segs = _decouper_arete(
-                xa, ya, xb, yb,
-                eps0, alpha, beta,
-                [0.0]
-            )
-
-            for x1, y1, x2, y2, e1, e2_loc in segs:
-                if e1 <= 0 and e2_loc <= 0:
-                    continue
-
-                res += _contrib_ELS_exact(
-                    x1, y1, x2, y2,
-                    eps0, alpha, beta, C
-                )
+            # Découpage à ε=0 uniquement
+            segs = _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, [0.0])
+            for x1, y1, x2, y2, em in segs:
+                if em <= 0.0:
+                    continue   # zone T : σ=0
+                res += _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C)
 
         else:  # ELU
-
-            segs = _decouper_arete(
-                xa, ya, xb, yb,
-                eps0, alpha, beta,
-                [0.0, e2]
-            )
-
-            for x1, y1, x2, y2, e1, e2_loc in segs:
-
-                if e1 <= 0 and e2_loc <= 0:
-                    continue
-
-                elif e1 <= e2 and e2_loc <= e2:
+            # Découpage à ε=0 et ε=e2
+            segs = _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, [0.0, e2])
+            for x1, y1, x2, y2, em in segs:
+                if em <= 0.0:
+                    continue   # zone T : σ=0
+                elif em <= e2:
                     res += _contrib_ELU_P_exact(
-                        x1, y1, x2, y2,
-                        eps0, alpha, beta,
-                        fcd, e2
-                    )
-
+                        x1, y1, x2, y2, eps0, alpha, beta, fcd, e2)
                 else:
-                    res += _contrib_ELU_R_exact(
-                        x1, y1, x2, y2,
-                        fcd
-                    )
+                    res += _contrib_ELU_R_exact(x1, y1, x2, y2, fcd)
 
-    # ⚠️ IMPORTANT : PAS de correction de signe ici
+    # Correction du sens de saisie (CCW → positif, CW → négatif)
+    if _aire_signee(pts) < 0:
+        res = -res
+
     return res
-
 
 
 # ═══════════════════════════════════════════════════════════════
