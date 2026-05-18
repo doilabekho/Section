@@ -301,23 +301,29 @@ def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
     Contribution EXACTE ELS d'un sous-segment à [N, My, Mz, Scom].
     σ = C·ε  (zone C uniquement — appelé seulement si ε_mid > 0).
 
-    N  = C·Δy·(εa + Δε/2)
-    My = C·Δy·[εa·y1 + (εa·Δy + y1·Δε)/2 + Δε·Δy/3]
-    Mz = C·Δy·[εa·x1 + (εa·Δx + x1·Δε)/2 + Δε·Δx/3]
-    Sc = Δy·(x1 + Δx/2)
+    CORRECTION : 
+    - My dépend du bras de levier X (dx, x1)
+    - Mz dépend du bras de levier Y (dy, y1)
     """
-    dx = x2-x1;  dy = y2-y1
+    dx = x2 - x1
+    dy = y2 - y1
     if abs(dy) < 1e-15:
         return np.zeros(4)
 
-    ea  = eps0 + alpha*x1 + beta*y1
-    eb  = eps0 + alpha*x2 + beta*y2
+    ea  = eps0 + alpha * x1 + beta * y1
+    eb  = eps0 + alpha * x2 + beta * y2
     de  = eb - ea   # Δε
 
-    N_  = C * dy * (ea + de/2.0)
-    My_ = C * dy * (ea*y1 + (ea*dy + y1*de)/2.0 + de*dy/3.0)
-    Mz_ = C * dy * (ea*x1 + (ea*dx + x1*de)/2.0 + de*dx/3.0)
-    Sc_ = dy * (x1 + dx/2.0)
+    # --- CALCULS ANALYTIQUES PAR INTÉGRATION DE GREEN ---
+    N_  = C * dy * (ea + de / 2.0)
+    
+    # My_ utilise les bras de levier en X (dx et x1)
+    My_ = C * dy * (ea * x1 + (ea * dx + x1 * de) / 2.0 + de * dx / 3.0)
+    
+    # Mz_ utilise les bras de levier en Y (dy et y1)
+    Mz_ = C * dy * (ea * y1 + (ea * dy + y1 * de) / 2.0 + de * dy / 3.0)
+    
+    Sc_ = dy * (x1 + dx / 2.0)
 
     return np.array([N_, My_, Mz_, Sc_])
 
