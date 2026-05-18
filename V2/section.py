@@ -345,7 +345,7 @@ def _geom_integrals(x1, y1, x2, y2):
 
 def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
 
-    def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
+   
 
     dx = x2 - x1
     dy = y2 - y1
