@@ -499,7 +499,13 @@ def calculer_N_My_Mz(
         if len(trou) >= 3:
             res_v += _integrer_polygone(trou, eps0, alpha, beta, 'ELS', C=C)
 
-    Nc, Mc_y, Mc_z = (res_c - res_v)[:3]
+
+    res_tot = (res_c - res_v)
+    
+    Nc  = res_tot[2]
+    Mc_y = res_tot[1]
+    Mc_z = res_tot[0]
+
 
     # ── Acier
     Ns = Msy = Msz = 0.0
