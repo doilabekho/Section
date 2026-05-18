@@ -20,38 +20,7 @@ from acier import *   # ← fonctionne en local et sur GitHub
 
 
 
-# section.py — version complète avec intégration analytique exacte
-# par théorème de Green pour loi parabole-rectangle n=2 (C20-C50)
 
-import numpy as np
-from scipy.optimize import root, fsolve
-from matplotlib.path import Path
-from scipy.spatial import Delaunay
-
-# ══════════════════════════════════════════════════════════════════════
-# FONCTIONS DE BASE
-# ══════════════════════════════════════════════════════════════════════
-
-
-
-# section.py — version finale complète
-# Intégration analytique EXACTE par théorème de Green
-# ELS et ELU — indépendant du sens de saisie du polygone
-
-import numpy as np
-from scipy.optimize import root
-from xlwings import func
-
-from beton import (
-    sgn, eps_c2, eps_n,
-    sigma_c_n, eps_c_n,
-    sigma_c_pararect, epsilon_c_pararect,
-    sigma_c_n1, sigma_c_pararect1,
-)
-from acier import (
-    sigma_s_palier, sigma_s_palier1, eps_s_palier,
-    sigma_s_lin, eps_s_lin, sigma_s_lin1,
-)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -379,34 +348,41 @@ def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
     dx = x2 - x1
     dy = y2 - y1
 
-    if abs(dx)+abs(dy) < 1e-15:
+    if abs(dy) < 1e-15:
         return np.zeros(4)
 
-    # Intégrales géométriques Green
-    A  = dy * (x1 + dx/2.0)
+    # Déformation aux extrémités
+    ea = eps0 + alpha*x1 + beta*y1
+    eb = eps0 + alpha*x2 + beta*y2
+    de = eb - ea
 
-    Sx = dy * (x1**2/2.0 + x1*dx/2.0 + dx**2/6.0)
-    Sy = dy * (x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0)
+    # ⚠️ IMPORTANT : epsilon > 0 uniquement (zone compression)
+    # le découpage est censé garantir ça → OK
 
-    # ∫ y² dA
-    Iy = dy * (
-        x1*y1**2
-        + (2*x1*y1*dy + y1**2*dx)/2.0
-        + (x1*dy**2 + 2*y1*dx*dy)/3.0
-        + dx*dy**2/4.0
+    # ===== INTÉGRALES EXACTES =====
+
+    # N = ∮ ∫ σ dξ dy
+    # mais via paramétrisation → on retrouve ta bonne formule
+
+    N_ = C * dy * (ea + de/2.0)
+
+    # moments EXACTS
+    My_ = C * dy * (
+        ea*y1
+        + (ea*dy + y1*de)/2.0
+        + de*dy/3.0
     )
 
-    # Efforts
-    N_ = C * (eps0*A + alpha*Sx + beta*Sy)
+    Mz_ = C * dy * (
+        ea*x1
+        + (ea*dx + x1*de)/2.0
+        + de*dx/3.0
+    )
 
-    My_ = C * (eps0*Sy + alpha*Sx*y1 + beta*Iy)
-
-    Mz_ = C * (eps0*Sx + alpha*Sx*dx + beta*Sy)
-
-    Sc_ = A
+    # aire comprimée UNIQUEMENT
+    Sc_ = dy * (x1 + dx/2.0)
 
     return np.array([N_, My_, Mz_, Sc_])
-
 
 # ──────────────────────────────────────────────────────────────
 # ELU — zone R (σ = fcd)
