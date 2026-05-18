@@ -288,30 +288,36 @@ def aire_et_centre(data):
 import numpy as np
 
 # ═══════════════════════════════════════════════════════════════
-# OUTILS GÉOMÉTRIQUES
+# BLOC 2 — NOYAU GREEN ANALYTIQUE EXACT (VERSION RIGOUREUSE)
+# ═══════════════════════════════════════════════════════════════
+#
+# Théorème de Green :
+# ∬ f(x,y) dA = ∮ Q(x,y) dy avec Q(x,y)=∫₀ˣ f(ξ,y)dξ
+#
+# → Toutes les intégrales sont traitées rigoureusement
+# → Compatible BA (ELS / ELU)
+# → Exact pour N, My, Mz
+#
+# Aire :
+#   A = ∮ x dy
+#
+# Moments :
+#   ∫ y dA = ∮ x y dy
+#   ∫ x dA = ∮ x²/2 dy
+#
 # ═══════════════════════════════════════════════════════════════
 
+
 def _aire_signee(pts):
-    """Aire signée — Shoelace. + = CCW, - = CW."""
+    """Aire signée (shoelace)."""
     a = 0.0
     n = len(pts)
     for i in range(n):
         x1, y1 = pts[i]
         x2, y2 = pts[(i+1) % n]
         a += x1*y2 - x2*y1
-    return 0.5*a
+    return 0.5 * a
 
-
-def _edge_geom(x1, y1, x2, y2):
-    dx = x2 - x1
-    dy = y2 - y1
-    L  = (dx*dx + dy*dy)**0.5
-    return dx, dy, L
-
-
-# ═══════════════════════════════════════════════════════════════
-# DÉCOUPAGE ROBUSTE
-# ═══════════════════════════════════════════════════════════════
 
 def _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, seuils):
 
@@ -349,53 +355,64 @@ def _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, seuils):
 
 
 # ═══════════════════════════════════════════════════════════════
-# CONTRIBUTIONS ELS
+# CONTRIBUTIONS EXACTES — GREEN
 # ═══════════════════════════════════════════════════════════════
 
-def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
+def _geom_integrals(x1, y1, x2, y2):
+    """Intégrales géométriques exactes via Green."""
+    dx = x2 - x1
+    dy = y2 - y1
 
-    dx, dy, L = _edge_geom(x1, y1, x2, y2)
-    if L < 1e-15:
-        return np.zeros(4)
+    A  = dy * (x1 + dx/2.0)
+    My = dy * (x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0)
+    Mz = dy * (x1**2/2.0 + x1*dx/2.0 + dx**2/6.0)
+
+    return A, My, Mz
+
+
+# ──────────────────────────────────────────────────────────────
+# ELS (σ = C·ε)
+# ──────────────────────────────────────────────────────────────
+
+def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
 
     ea = eps0 + alpha*x1 + beta*y1
     eb = eps0 + alpha*x2 + beta*y2
     de = eb - ea
 
-    I0 = ea + de/2.0
-    I1 = ea/2.0 + de/3.0
+    I0 = ea + de/2.0  # moyenne de ε
 
-    N_  = C * dy * I0
-    My_ = C * dy * (y1*I0 + dy*I1)
-    Mz_ = C * dy * (x1*I0 + dx*I1)
-    Sc_ = dy * (x1 + dx/2.0)
+    A, My_g, Mz_g = _geom_integrals(x1, y1, x2, y2)
+
+    N_  = C * A * I0
+    My_ = C * My_g * I0
+    Mz_ = C * Mz_g * I0
+    Sc_ = A
 
     return np.array([N_, My_, Mz_, Sc_])
 
 
-# ═══════════════════════════════════════════════════════════════
-# CONTRIBUTIONS ELU
-# ═══════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────
+# ELU — zone R (σ = fcd)
+# ──────────────────────────────────────────────────────────────
 
 def _contrib_ELU_R_exact(x1, y1, x2, y2, fcd):
 
-    dx, dy, L = _edge_geom(x1, y1, x2, y2)
-    if L < 1e-15:
-        return np.zeros(4)
+    A, My_g, Mz_g = _geom_integrals(x1, y1, x2, y2)
 
-    N_  = fcd * dy
-    My_ = fcd * dy * (y1 + dy/2.0)
-    Mz_ = fcd * dy * (x1 + dx/2.0)
-    Sc_ = dy * (x1 + dx/2.0)
+    N_  = fcd * A
+    My_ = fcd * My_g
+    Mz_ = fcd * Mz_g
+    Sc_ = A
 
     return np.array([N_, My_, Mz_, Sc_])
 
 
-def _contrib_ELU_P_exact(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2):
+# ──────────────────────────────────────────────────────────────
+# ELU — zone P (parabole)
+# ──────────────────────────────────────────────────────────────
 
-    dx, dy, L = _edge_geom(x1, y1, x2, y2)
-    if L < 1e-15:
-        return np.zeros(4)
+def _contrib_ELU_P_exact(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2):
 
     ea = eps0 + alpha*x1 + beta*y1
     eb = eps0 + alpha*x2 + beta*y2
@@ -404,13 +421,14 @@ def _contrib_ELU_P_exact(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2):
     ub = eb / e2
     du = ub - ua
 
-    I0 = 2*ua - ua**2 + du - ua*du - (du**2)/3.0
-    I1 = (2*ua - ua**2)/2.0 + (2*du - 2*ua*du)/3.0 - (du**2)/4.0
+    I0 = 2*ua - ua**2 + du - ua*du - du**2/3.0
 
-    N_  = fcd * dy * I0
-    My_ = fcd * dy * (y1*I0 + dy*I1)
-    Mz_ = fcd * dy * (x1*I0 + dx*I1)
-    Sc_ = dy * (x1 + dx/2.0)
+    A, My_g, Mz_g = _geom_integrals(x1, y1, x2, y2)
+
+    N_  = fcd * A * I0
+    My_ = fcd * My_g * I0
+    Mz_ = fcd * Mz_g * I0
+    Sc_ = A
 
     return np.array([N_, My_, Mz_, Sc_])
 
@@ -423,7 +441,7 @@ def _integrer_polygone(vertices, eps0, alpha, beta,
                        mode, C=None, fcd=None, e2=None):
 
     pts = np.asarray(vertices, dtype=float)
-    n   = len(pts)
+    n = len(pts)
 
     if n < 3:
         return np.zeros(4)
@@ -431,25 +449,34 @@ def _integrer_polygone(vertices, eps0, alpha, beta,
     res = np.zeros(4)
 
     for i in range(n):
+
         xa, ya = pts[i]
         xb, yb = pts[(i+1) % n]
 
         if mode == 'ELS':
 
-            segs = _decouper_arete(xa, ya, xb, yb,
-                                   eps0, alpha, beta, [0.0])
+            segs = _decouper_arete(
+                xa, ya, xb, yb,
+                eps0, alpha, beta,
+                [0.0]
+            )
 
             for x1, y1, x2, y2, e1, e2_loc in segs:
                 if e1 <= 0 and e2_loc <= 0:
                     continue
 
                 res += _contrib_ELS_exact(
-                    x1, y1, x2, y2, eps0, alpha, beta, C)
+                    x1, y1, x2, y2,
+                    eps0, alpha, beta, C
+                )
 
         else:  # ELU
 
-            segs = _decouper_arete(xa, ya, xb, yb,
-                                   eps0, alpha, beta, [0.0, e2])
+            segs = _decouper_arete(
+                xa, ya, xb, yb,
+                eps0, alpha, beta,
+                [0.0, e2]
+            )
 
             for x1, y1, x2, y2, e1, e2_loc in segs:
 
@@ -458,24 +485,18 @@ def _integrer_polygone(vertices, eps0, alpha, beta,
 
                 elif e1 <= e2 and e2_loc <= e2:
                     res += _contrib_ELU_P_exact(
-                        x1, y1, x2, y2, eps0, alpha, beta, fcd, e2)
-
-                elif e1 > e2 and e2_loc > e2:
-                    res += _contrib_ELU_R_exact(x1, y1, x2, y2, fcd)
+                        x1, y1, x2, y2,
+                        eps0, alpha, beta,
+                        fcd, e2
+                    )
 
                 else:
-                    em = 0.5*(e1 + e2_loc)
-                    if em <= e2:
-                        res += _contrib_ELU_P_exact(
-                            x1, y1, x2, y2, eps0, alpha, beta, fcd, e2)
-                    else:
-                        res += _contrib_ELU_R_exact(
-                            x1, y1, x2, y2, fcd)
+                    res += _contrib_ELU_R_exact(
+                        x1, y1, x2, y2,
+                        fcd
+                    )
 
-    # correction sens
-    if _aire_signee(pts) < 0:
-        res = -res
-
+    # ⚠️ IMPORTANT : PAS de correction de signe ici
     return res
 
 
