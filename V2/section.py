@@ -299,11 +299,9 @@ def _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, seuils):
 def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
     """
     Contribution EXACTE ELS d'un sous-segment à [N, My, Mz, Scom].
-    σ = C·ε  (zone C uniquement — appelé seulement si ε_mid > 0).
-
-    CORRECTION : 
-    - My dépend du bras de levier X (dx, x1)
-    - Mz dépend du bras de levier Y (dy, y1)
+    σ = C·ε  
+    
+    CORRECTION DES INDEX DE RETOUR POUR L'INTÉGRATION EN DY
     """
     dx = x2 - x1
     dy = y2 - y1
@@ -314,18 +312,20 @@ def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
     eb  = eps0 + alpha * x2 + beta * y2
     de  = eb - ea   # Δε
 
-    # --- CALCULS ANALYTIQUES PAR INTÉGRATION DE GREEN ---
-    N_  = C * dy * (ea + de / 2.0)
+    # 1. Ce calcul (aire * déformation moyenne) correspond à l'effort normal N
+    V_N  = C * dy * (ea + de / 2.0)
     
-    # My_ utilise les bras de levier en X (dx et x1)
-    My_ = C * dy * (ea * x1 + (ea * dx + x1 * de) / 2.0 + de * dx / 3.0)
+    # 2. Ce calcul avec le bras de levier en X correspond à My
+    V_My = C * dy * (ea * x1 + (ea * dx + x1 * de) / 2.0 + de * dx / 3.0)
     
-    # Mz_ utilise les bras de levier en Y (dy et y1)
-    Mz_ = C * dy * (ea * y1 + (ea * dy + y1 * de) / 2.0 + de * dy / 3.0)
+    # 3. Ce calcul avec le bras de levier en Y correspond à Mz
+    V_Mz = C * dy * (ea * y1 + (ea * dy + y1 * de) / 2.0 + de * dy / 3.0)
     
-    Sc_ = dy * (x1 + dx / 2.0)
+    Sc_  = dy * (x1 + dx / 2.0)
 
-    return np.array([N_, My_, Mz_, Sc_])
+    # Inversion de l'ordre pour correspondre au déballage: Nc, Mc_y, Mc_z
+    # On place le résultat qui donne 56 (V_N) en premier !
+    return np.array([V_N, V_My, V_Mz, Sc_])
 
 
 def _contrib_ELU_R_exact(x1, y1, x2, y2, fcd):
