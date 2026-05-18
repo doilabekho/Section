@@ -345,41 +345,38 @@ def _geom_integrals(x1, y1, x2, y2):
 
 def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
 
+    def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
+
     dx = x2 - x1
     dy = y2 - y1
 
     if abs(dy) < 1e-15:
         return np.zeros(4)
 
-    # Déformation aux extrémités
     ea = eps0 + alpha*x1 + beta*y1
     eb = eps0 + alpha*x2 + beta*y2
     de = eb - ea
 
-    # ⚠️ IMPORTANT : epsilon > 0 uniquement (zone compression)
-    # le découpage est censé garantir ça → OK
+    # ✅ INTÉGRALES AVEC x (Green correct)
 
-    # ===== INTÉGRALES EXACTES =====
-
-    # N = ∮ ∫ σ dξ dy
-    # mais via paramétrisation → on retrouve ta bonne formule
-
-    N_ = C * dy * (ea + de/2.0)
-
-    # moments EXACTS
-    My_ = C * dy * (
-        ea*y1
-        + (ea*dy + y1*de)/2.0
-        + de*dy/3.0
-    )
-
-    Mz_ = C * dy * (
+    N_ = C * dy * (
         ea*x1
         + (ea*dx + x1*de)/2.0
         + de*dx/3.0
     )
 
-    # aire comprimée UNIQUEMENT
+    My_ = C * dy * (
+        ea*x1*y1
+        + (ea*(x1*dy + y1*dx) + de*x1*y1)/2.0
+        + de*(x1*dy + y1*dx)/3.0
+    )
+
+    Mz_ = C * dy * (
+        ea*(x1**2/2.0)
+        + (ea*x1*dx + de*(x1**2)/2.0)/2.0
+        + de*(x1*dx)/3.0
+    )
+
     Sc_ = dy * (x1 + dx/2.0)
 
     return np.array([N_, My_, Mz_])
