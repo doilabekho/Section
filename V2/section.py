@@ -376,17 +376,33 @@ def _geom_integrals(x1, y1, x2, y2):
 
 def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
 
-    ea = eps0 + alpha*x1 + beta*y1
-    eb = eps0 + alpha*x2 + beta*y2
-    de = eb - ea
+    dx = x2 - x1
+    dy = y2 - y1
 
-    I0 = ea + de/2.0  # moyenne de ε
+    if abs(dx)+abs(dy) < 1e-15:
+        return np.zeros(4)
 
-    A, My_g, Mz_g = _geom_integrals(x1, y1, x2, y2)
+    # Intégrales géométriques Green
+    A  = dy * (x1 + dx/2.0)
 
-    N_  = C * A * I0
-    My_ = C * My_g * I0
-    Mz_ = C * Mz_g * I0
+    Sx = dy * (x1**2/2.0 + x1*dx/2.0 + dx**2/6.0)
+    Sy = dy * (x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0)
+
+    # ∫ y² dA
+    Iy = dy * (
+        x1*y1**2
+        + (2*x1*y1*dy + y1**2*dx)/2.0
+        + (x1*dy**2 + 2*y1*dx*dy)/3.0
+        + dx*dy**2/4.0
+    )
+
+    # Efforts
+    N_ = C * (eps0*A + alpha*Sx + beta*Sy)
+
+    My_ = C * (eps0*Sy + alpha*Sx*y1 + beta*Iy)
+
+    Mz_ = C * (eps0*Sx + alpha*Sx*dx + beta*Sy)
+
     Sc_ = A
 
     return np.array([N_, My_, Mz_, Sc_])
