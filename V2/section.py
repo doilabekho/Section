@@ -21,283 +21,122 @@ from acier import *   # ← fonctionne en local et sur GitHub
 
 
 
-# section.py — version finale complète
-# Intégration analytique EXACTE par théorème de Green
-# ELS et ELU — indépendant du sens de saisie du polygone
+# section.py — VERSION FINALE CORRIGÉE
+# Green analytique exact — ELS + ELU (EC2 parabole-rectangle n=2)
 
 import numpy as np
 from scipy.optimize import root
 from xlwings import func
 
 from beton import (
-    sgn, eps_c2, eps_n,
-    sigma_c_n, eps_c_n,
-    sigma_c_pararect, epsilon_c_pararect,
+    eps_c2,
     sigma_c_n1, sigma_c_pararect1,
 )
 from acier import (
-    sigma_s_palier, sigma_s_palier1, eps_s_palier,
-    sigma_s_lin, eps_s_lin, sigma_s_lin1,
+    sigma_s_palier1,
+    sigma_s_lin1,
 )
 
-
 # ═══════════════════════════════════════════════════════════════
-# BLOC 1 — UTILITAIRES GÉOMÉTRIQUES
-# ═══════════════════════════════════════════════════════════════
-
-@func
-def n_liste(data):
-    count = 0
-    for row in data:
-        if len(row) >= 2:
-            v0 = str(row[0]).strip().lower()
-            v1 = str(row[1]).strip().lower()
-            if v0 == "fin" or v1 == "fin":
-                count += 1
-    return count
-
-@func
-def liste_i(data, i):
-    fins = []
-    for idx, row in enumerate(data):
-        if len(row) >= 2:
-            v0 = str(row[0]).strip().lower()
-            v1 = str(row[1]).strip().lower()
-            if v0 == "fin" or v1 == "fin":
-                fins.append(idx)
-    if i < 1 or i > len(fins):
-        return []
-    start = 0 if i == 1 else fins[i-2] + 1
-    return data[start:fins[i-1]]
-
-@func
-def points_valides(data):
-    pts = []
-    for row in data:
-        if len(row) >= 2:
-            try:
-                pts.append((float(row[0]), float(row[1])))
-            except:
-                pass
-    return pts
-
-@func
-def nettoyer_polygone(points, tol=1e-9):
-    if len(points) < 2:
-        return points
-    x1, y1 = points[0]
-    x2, y2 = points[-1]
-    if abs(x1-x2) < tol and abs(y1-y2) < tol:
-        return points[:-1]
-    return points
-
-@func
-def aire_centre_inertie_origine(data):
-    """Green exact : A, Cx, Cy, Ix, Iy par formule de Shoelace."""
-    pts = points_valides(data)
-    n = len(pts)
-    if n < 3:
-        return 0.0, None, None, 0.0, 0.0
-    A = Cx = Cy = Ix = Iy = 0.0
-    for i in range(n):
-        x1, y1 = pts[i]
-        x2, y2 = pts[(i+1) % n]
-        cross = x1*y2 - x2*y1
-        A  += cross
-        Cx += (x1+x2)*cross
-        Cy += (y1+y2)*cross
-        Ix += (y1**2 + y1*y2 + y2**2)*cross
-        Iy += (x1**2 + x1*x2 + x2**2)*cross
-    A *= 0.5
-    if A == 0:
-        return 0.0, None, None, 0.0, 0.0
-    Cx /= (6*A); Cy /= (6*A)
-    Ix /= 12;    Iy /= 12
-    return np.abs(A), Cx, Cy, np.abs(Ix), np.abs(Iy)
-
-@func
-def caracteristiques_mecaniques(contour, evidement):
-    A, Cx, Cy, Ix0, Iy0 = aire_centre_inertie_origine(contour)
-    if A == 0:
-        return 0.0, None, None, 0.0, 0.0
-    A_tot  = A;    Cx_tot = A*Cx; Cy_tot = A*Cy
-    Ix_tot = Ix0;  Iy_tot = Iy0
-    N = n_liste(evidement)
-    for i in range(1, N+1):
-        Li = liste_i(evidement, i)
-        Ai, cxi, cyi, ixi, iyi = aire_centre_inertie_origine(Li)
-        if Ai > 0:
-            A_tot  -= Ai;     Cx_tot -= Ai*cxi; Cy_tot -= Ai*cyi
-            Ix_tot -= ixi;    Iy_tot -= iyi
-    if A_tot == 0:
-        return 0.0, None, None, 0.0, 0.0
-    CxG = Cx_tot/A_tot;  CyG = Cy_tot/A_tot
-    return (np.abs(A_tot), CxG, CyG,
-            np.abs(Ix_tot - A_tot*CyG**2),
-            np.abs(Iy_tot - A_tot*CxG**2))
-
-@func
-def translation_points(data, Cx, Cy):
-    pts_trans = []
-    for row in data:
-        if len(row) >= 2:
-            try:
-                pts_trans.append((float(row[0])-Cx, float(row[1])-Cy))
-            except:
-                pass
-    return pts_trans
-
-@func
-def transformation_repere_cg(contour, evidement):
-    A, Cx, Cy, Ix, Iy = caracteristiques_mecaniques(contour, evidement)
-    if Cx is None or Cy is None:
-        return None, [], None, None
-    contour_cg = translation_points(contour, Cx, Cy)
-    evidements_cg = []
-    N = n_liste(evidement)
-    if N == 0:
-        return contour_cg, evidements_cg, Cx, Cy
-    for i in range(1, N+1):
-        Li = liste_i(evidement, i)
-        evidements_cg.append(translation_points(Li, Cx, Cy))
-    return contour_cg, evidements_cg, Cx, Cy
-
-@func
-def acier_G(p_acier, s_acier):
-    if p_acier is None or len(p_acier) == 0:
-        return []
-    p_acier = np.atleast_2d(p_acier)
-    s_acier = np.atleast_1d(s_acier)
-    newacier = []
-    nx = min(p_acier.shape[0], s_acier.shape[0])
-    for i in range(nx):
-        try:
-            if p_acier[i,0] in (None,"","") or p_acier[i,1] in (None,"",""):
-                continue
-            x = float(p_acier[i,0]); y = float(p_acier[i,1])
-            s = float(s_acier[i])
-            newacier.append([x, y, s/10000.0])
-        except (ValueError, TypeError, IndexError):
-            continue
-    return newacier
-
-@func
-def centre_gravite_polygone(data):
-    pts = points_valides(data)
-    n = len(pts)
-    if n < 3: return None, None
-    A = Cx = Cy = 0.0
-    for i in range(n):
-        x1,y1=pts[i]; x2,y2=pts[(i+1)%n]
-        cross=x1*y2-x2*y1; A+=cross; Cx+=(x1+x2)*cross; Cy+=(y1+y2)*cross
-    A*=0.5
-    if A==0: return None, None
-    return Cx/(6*A), Cy/(6*A)
-
-@func
-def aire_et_centre(data):
-    pts = points_valides(data)
-    n = len(pts)
-    if n < 3: return 0.0, None, None
-    A = Cx = Cy = 0.0
-    for i in range(n):
-        x1,y1=pts[i]; x2,y2=pts[(i+1)%n]
-        cross=x1*y2-x2*y1; A+=cross; Cx+=(x1+x2)*cross; Cy+=(y1+y2)*cross
-    A*=0.5
-    if A==0: return 0.0, None, None
-    return abs(A), Cx/(6*A), Cy/(6*A)
-
-
-# ═══════════════════════════════════════════════════════════════
-# BLOC 2 — NOYAU GREEN ANALYTIQUE EXACT
-# ═══════════════════════════════════════════════════════════════
-#
-# Théorème de Green :  ∬_Ω f(x,y) dA = ∮_∂Ω Q(x,y) dy
-# avec ∂Q/∂x = f(x,y)
-#
-# Correction du sens : aire_signee = Σ (x1·y2 - x2·y1)/2
-# Si aire_signee < 0 (sens horaire), on inverse le signe du résultat.
-#
-# ── DÉCOUPAGE EN ZONES ──────────────────────────────────────
-# Pour ELS : zones T (ε≤0, σ=0) et C (ε>0, σ=C·ε)
-# Pour ELU : zones T (ε≤0), P (0<ε≤e2), R (ε>e2)
-#
-# Chaque arête est découpée aux t∈(0,1) où ε=0 et ε=e2.
-# Sur chaque sous-segment la zone est constante.
-#
-# ── PRIMITIVES EXACTES ──────────────────────────────────────
-#
-# Paramétrage arête : x(t)=xa+t·dx, y(t)=ya+t·dy, t∈[0,1]
-# Notation : ta..tb = sous-intervalle après reparamétrisation en s∈[0,1]
-# Sur [ta,tb] : s∈[0,1], x=x1+s·Δx, y=y1+s·Δy, ε=εa+s·Δε
-# avec x1=xa+ta·dx, Δx=(tb-ta)·dx, etc.
-#
-# INTÉGRALES ÉLÉMENTAIRES sur [0,1] :
-#   ∫s^k ds = 1/(k+1)
-#   Notons : εa, Δε, x1, Δx, y1, Δy
-#
-# ELS Zone C (σ=C·ε) :
-#   N  = C·Δy·∫(εa+Δε·s) ds
-#      = C·Δy·(εa + Δε/2)
-#
-#   My = C·Δy·∫(εa+Δε·s)·(y1+Δy·s) ds
-#      = C·Δy·[εa·y1 + (εa·Δy+y1·Δε)/2 + Δε·Δy/3]
-#
-#   Mz = C·Δy·∫(εa+Δε·s)·(x1+Δx·s) ds
-#      = C·Δy·[εa·x1 + (εa·Δx+x1·Δε)/2 + Δε·Δx/3]
-#
-#   Scom = Δy·∫(x1+Δx·s) ds = Δy·(x1 + Δx/2)
-#
-# ELU Zone R (σ=fcd) :
-#   N  = fcd·Δy
-#   My = fcd·Δy·(y1 + Δy/2)
-#   Mz = fcd·Δy·(x1 + Δx/2)
-#   Scom = Δy·(x1 + Δx/2)   [même que ELS zone C]
-#
-# ELU Zone P (σ=fcd·(2u-u²), u=ε/e2) :
-#   u(s) = (εa+Δε·s)/e2 = ua + s·Δu  (ua=εa/e2, Δu=Δε/e2)
-#
-#   σ = fcd·(2u - u²)
-#     = fcd·(2ua + 2Δu·s - ua² - 2ua·Δu·s - Δu²·s²)
-#
-#   ∫₀¹ σ ds = fcd·(2ua + 2Δu/2 - ua² - 2ua·Δu/2 - Δu²/3)
-#            = fcd·(2ua + Δu - ua² - ua·Δu - Δu²/3)
-#
-#   ∫₀¹ σ·s ds = fcd·(2ua/2 + 2Δu/3 - ua²/2 - 2ua·Δu/3 - Δu²/4)
-#
-#   N  = fcd·Δy·I0
-#   My = fcd·Δy·(y1·I0 + Δy·I1)
-#   Mz = fcd·Δy·(x1·I0 + Δx·I1)
-#   Scom = Δy·(x1 + Δx/2)
-#
-# où I0 = ∫₀¹ σ/fcd ds,  I1 = ∫₀¹ σ/fcd · s ds
+# UTILITAIRES
 # ═══════════════════════════════════════════════════════════════
 
 def _aire_signee(pts):
-    """Aire signée — Shoelace. + = CCW (trigonométrique), - = CW."""
     a = 0.0
-    n = len(pts)
-    for i in range(n):
+    for i in range(len(pts)):
         x1, y1 = pts[i]
-        x2, y2 = pts[(i+1) % n]
+        x2, y2 = pts[(i+1) % len(pts)]
         a += x1*y2 - x2*y1
-    return 0.5*a
+    return 0.5 * a
 
-
-# ═══════════════════════════════════════════════════════════════
-# BLOC 2 — GREEN EXACT CORRIGÉ (VERSION PROPRE)
-# ═══════════════════════════════════════════════════════════════
 
 def _orienter_ccw(pts):
-    """Assure orientation trigonométrique (CCW)."""
     if _aire_signee(pts) < 0:
         return pts[::-1]
     return pts
 
 
-def _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, seuils):
-    ea = eps0 + alpha*xa + beta*ya
-    eb = eps0 + alpha*xb + beta*yb
+@func
+def points_valides(data):
+    pts = []
+    for row in data:
+        try:
+            pts.append((float(row[0]), float(row[1])))
+        except:
+            pass
+    return pts
+
+
+@func
+def nettoyer_polygone(points, tol=1e-9):
+    if len(points) < 2:
+        return points
+    if np.linalg.norm(np.array(points[0]) - np.array(points[-1])) < tol:
+        return points[:-1]
+    return points
+
+
+@func
+def aire_centre_inertie_origine(data):
+    pts = points_valides(data)
+    if len(pts) < 3:
+        return 0, None, None, 0, 0
+
+    A = Cx = Cy = Ix = Iy = 0
+
+    for i in range(len(pts)):
+        x1,y1 = pts[i]
+        x2,y2 = pts[(i+1)%len(pts)]
+        cross = x1*y2-x2*y1
+        A  += cross
+        Cx += (x1+x2)*cross
+        Cy += (y1+y2)*cross
+        Ix += (y1**2+y1*y2+y2**2)*cross
+        Iy += (x1**2+x1*x2+x2**2)*cross
+
+    A *= 0.5
+    if A == 0:
+        return 0, None, None, 0, 0
+
+    Cx /= (6*A)
+    Cy /= (6*A)
+    Ix /= 12
+    Iy /= 12
+
+    return abs(A), Cx, Cy, abs(Ix), abs(Iy)
+
+
+def translation_points(data, Cx, Cy):
+    return [(float(x)-Cx, float(y)-Cy) for x,y in data]
+
+
+def transformation_repere_cg(contour, evidement):
+    A, Cx, Cy, _, _ = aire_centre_inertie_origine(contour)
+    if Cx is None:
+        return None, [], None, None
+    return translation_points(contour, Cx, Cy), [], Cx, Cy
+
+
+def acier_G(p_acier, s_acier):
+    if p_acier is None:
+        return []
+    pts = []
+    for i in range(min(len(p_acier), len(s_acier))):
+        try:
+            pts.append([float(p_acier[i][0]), float(p_acier[i][1]), float(s_acier[i])/10000])
+        except:
+            pass
+    return pts
+
+
+# ═══════════════════════════════════════════════════════════════
+# GREEN EXACT
+# ═══════════════════════════════════════════════════════════════
+
+def _decouper_arete(xa, ya, xb, yb, eps0, a, b, seuils):
+
+    ea = eps0 + a*xa + b*ya
+    eb = eps0 + a*xb + b*yb
 
     cuts = [0.0]
     de = eb - ea
@@ -314,215 +153,147 @@ def _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, seuils):
     segs = []
     for i in range(len(cuts)-1):
         t1, t2 = cuts[i], cuts[i+1]
-
         x1 = xa + t1*(xb-xa)
         y1 = ya + t1*(yb-ya)
         x2 = xa + t2*(xb-xa)
         y2 = ya + t2*(yb-ya)
 
-        ea_s = eps0 + alpha*x1 + beta*y1
-        eb_s = eps0 + alpha*x2 + beta*y2
+        ea1 = eps0 + a*x1 + b*y1
+        eb1 = eps0 + a*x2 + b*y2
 
-        segs.append((x1, y1, x2, y2, ea_s, eb_s))
+        segs.append((x1,y1,x2,y2,ea1,eb1))
 
     return segs
 
 
-# ─────────────────────────────────────────────────────────────
-# ELS EXACT
-# ─────────────────────────────────────────────────────────────
+def _contrib_ELS(x1,y1,x2,y2,eps0,a,b,C):
 
-def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
-    dx = x2 - x1
-    dy = y2 - y1
-    if abs(dy) < 1e-15:
+    dx = x2-x1
+    dy = y2-y1
+    if abs(dy)<1e-15:
         return np.zeros(4)
 
-    ea = eps0 + alpha*x1 + beta*y1
-    eb = eps0 + alpha*x2 + beta*y2
-    de = eb - ea
+    ea = eps0+a*x1+b*y1
+    eb = eps0+a*x2+b*y2
+    de = eb-ea
 
-    # intégrales exactes
-    N  = C * dy * (ea + de/2)
-    My = C * dy * (ea*y1 + (ea*dy + y1*de)/2 + de*dy/3)
-    Mz = C * dy * (ea*x1 + (ea*dx + x1*de)/2 + de*dx/3)
+    N  = C*dy*(ea+de/2)
+    My = C*dy*(ea*y1+(ea*dy+y1*de)/2+de*dy/3)
+    Mz = C*dy*(ea*x1+(ea*dx+x1*de)/2+de*dx/3)
+    Sc = dy*(x1+dx/2)
 
-    # Aire (Green correct = intégrale fermée)
-    Sc = dy * (x1 + dx/2)
-
-    return np.array([N, My, Mz, Sc])
+    return np.array([N,My,Mz,Sc])
 
 
-# ─────────────────────────────────────────────────────────────
-# ELU RECTANGLE
-# ─────────────────────────────────────────────────────────────
+def _contrib_ELU_R(x1,y1,x2,y2,fcd):
 
-def _contrib_ELU_R_exact(x1, y1, x2, y2, fcd):
-    dx = x2 - x1
-    dy = y2 - y1
-    if abs(dy) < 1e-15:
+    dx = x2-x1
+    dy = y2-y1
+    if abs(dy)<1e-15:
         return np.zeros(4)
 
-    N  = fcd * dy
-    My = fcd * dy * (y1 + dy/2)
-    Mz = fcd * dy * (x1 + dx/2)
-    Sc = dy * (x1 + dx/2)
+    N  = fcd*dy
+    My = fcd*dy*(y1+dy/2)
+    Mz = fcd*dy*(x1+dx/2)
+    Sc = dy*(x1+dx/2)
 
-    return np.array([N, My, Mz, Sc])
+    return np.array([N,My,Mz,Sc])
 
 
-# ─────────────────────────────────────────────────────────────
-# ELU PARABOLE n=2 (CORRIGÉ)
-# ─────────────────────────────────────────────────────────────
+def _contrib_ELU_P(x1,y1,x2,y2,eps0,a,b,fcd,e2):
 
-def _contrib_ELU_P_exact(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2):
-    dx = x2 - x1
-    dy = y2 - y1
-    if abs(dy) < 1e-15:
+    dx=x2-x1
+    dy=y2-y1
+    if abs(dy)<1e-15:
         return np.zeros(4)
 
-    ea = eps0 + alpha*x1 + beta*y1
-    eb = eps0 + alpha*x2 + beta*y2
+    ea=eps0+a*x1+b*y1
+    eb=eps0+a*x2+b*y2
 
-    ua = ea / e2
-    ub = eb / e2
-    du = ub - ua
+    ua=ea/e2
+    ub=eb/e2
+    du=ub-ua
 
-    I0 = 2*ua - ua**2 + du - ua*du - du**2/3
-    I1 = (ua - ua**2/2) + (2*du/3 - 2*ua*du/3) - du**2/4
+    I0=2*ua-ua**2+du-ua*du-du**2/3
+    I1=(ua-ua**2/2)+(2*du/3-2*ua*du/3)-du**2/4
 
-    N  = fcd * dy * I0
-    My = fcd * dy * (y1*I0 + dy*I1)
-    Mz = fcd * dy * (x1*I0 + dx*I1)
-    Sc = dy * (x1 + dx/2)
+    N=fcd*dy*I0
+    My=fcd*dy*(y1*I0+dy*I1)
+    Mz=fcd*dy*(x1*I0+dx*I1)
+    Sc=dy*(x1+dx/2)
 
-    return np.array([N, My, Mz, Sc])
+    return np.array([N,My,Mz,Sc])
 
 
-# ─────────────────────────────────────────────────────────────
-# INTÉGRATION GÉNÉRALE
-# ─────────────────────────────────────────────────────────────
+def _integrer_polygone(vertices, eps0,a,b, mode, C=None, fcd=None, e2=None):
 
-def _integrer_polygone(vertices, eps0, alpha, beta,
-                       mode, C=None, fcd=None, e2=None):
-
-    pts = _orienter_ccw(np.asarray(vertices, dtype=float))
-    n = len(pts)
-
-    if n < 3:
-        return np.zeros(4)
+    pts = _orienter_ccw(np.asarray(vertices(float)))
 
     res = np.zeros(4)
 
-    for i in range(n):
+    for i in range(len(pts)):
         xa, ya = pts[i]
-        xb, yb = pts[(i+1) % n]
+        xb, yb = pts[(i+1)%len(pts)]
 
-        if mode == 'ELS':
-            segs = _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, [0.0])
+        if mode=='ELS':
+            segs=_decouper_arete(xa,ya,xb,yb,eps0,a,b,[0])
 
-            for x1, y1, x2, y2, ea, eb in segs:
-                if ea <= 0 and eb <= 0:
+            for x1,y1,x2,y2,ea,eb in segs:
+                if ea<=0 and eb<=0:
                     continue
+                res+=_contrib_ELS(x1,y1,x2,y2,eps0,a,b,C)
 
-                res += _contrib_ELS_exact(x1, y1, x2, y2,
-                                         eps0, alpha, beta, C)
+        else:
+            segs=_decouper_arete(xa,ya,xb,yb,eps0,a,b,[0,e2])
 
-        else:  # ELU
-            segs = _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, [0.0, e2])
-
-            for x1, y1, x2, y2, ea, eb in segs:
-
-                if ea <= 0 and eb <= 0:
+            for x1,y1,x2,y2,ea,eb in segs:
+                if ea<=0 and eb<=0:
                     continue
-
-                elif ea >= e2 and eb >= e2:
-                    res += _contrib_ELU_R_exact(x1, y1, x2, y2, fcd)
-
+                elif ea>=e2 and eb>=e2:
+                    res+=_contrib_ELU_R(x1,y1,x2,y2,fcd)
                 else:
-                    res += _contrib_ELU_P_exact(
-                        x1, y1, x2, y2,
-                        eps0, alpha, beta, fcd, e2)
+                    res+=_contrib_ELU_P(x1,y1,x2,y2,eps0,a,b,fcd,e2)
 
     return res
 
 
 # ═══════════════════════════════════════════════════════════════
-# BLOC 3 — FONCTIONS PUBLIQUES
+# API
 # ═══════════════════════════════════════════════════════════════
 
 @func
-def S_com(polygon1, evi, eps0, alpha, beta):
-    """
-    Aire de la zone comprimée (ε > 0) — Green exact.
-    Indépendant du sens de saisie du polygone.
-    """
-    contour_cg, evidements_cg, Cx, Cy = transformation_repere_cg(polygon1, evi)
-    if contour_cg is None:
-        return 0.0
+def calculer_N_My_Mz(polygon1, evi, p_acier, s_acier,a_com,n,eps0,a,b):
 
-    contour_cg = nettoyer_polygone(contour_cg)
-    # On réutilise _integrer_polygone en mode ELS avec C=1
-    # (S_com = ∬ 1 dA sur zone comprimée, indépendant de la loi)
-    res_c = _integrer_polygone(contour_cg, eps0, alpha, beta, 'ELS', C=1.0)
-    Ic = res_c[3]   # Scom
+    contour,_,Cx,Cy = transformation_repere_cg(polygon1,evi)
+    if contour is None:
+        return 0,0,0
 
-    Iv = 0.0
-    for trou in evidements_cg:
-        trou = nettoyer_polygone(trou)
-        if len(trou) >= 3:
-            res_t = _integrer_polygone(trou, eps0, alpha, beta, 'ELS', C=1.0)
-            Iv += res_t[3]
+    contour = nettoyer_polygone(contour)
+    C = 200000/(n*1000)
 
-    return Ic - Iv
+    res = _integrer_polygone(contour,eps0,a,b,'ELS',C=C)
+
+    Nc,Myc,Mzc = res[:3]
+
+    Ns=Mys=Mzs=0
+
+    acier = acier_G(p_acier,s_acier)
+    if len(acier)>0:
+        ac=np.array(acier)
+        x=ac[:,0]-Cx
+        y=ac[:,1]-Cy
+        eps=eps0+a*x+b*y
+        sig=sigma_s_lin1(eps,a_com)
+        F=sig*ac[:,2]
+        Ns=np.sum(F)
+        Mys=np.sum(F*y)
+        Mzs=np.sum(F*x)
+
+    return Ns+Nc, Mys+Myc, Mzs+Mzc
 
 
-# ─────────────────────────────────────────────────────────────
-# ELS
-# ─────────────────────────────────────────────────────────────
 
-@func
-def calculer_N_My_Mz(
-    polygon1, evi, p_acier, s_acier,
-    a_com, n, eps0, alpha, beta
-):
-    """
-    ELS — N, My, Mz par Green analytique EXACT.
-    Loi béton : σ = max(0, C·ε) avec C = Es/(n·1000).
-    Indépendant du sens de saisie du polygone.
-    """
-    contour_cg, evidements_cg, Cx, Cy = transformation_repere_cg(polygon1, evi)
-    if contour_cg is None:
-        return 0.0, 0.0, 0.0
 
-    C = 200000.0 / (float(n) * 1000.0)
-
-    contour_cg = nettoyer_polygone(contour_cg)
-    res_c = _integrer_polygone(contour_cg, eps0, alpha, beta, 'ELS', C=C)
-
-    res_v = np.zeros(4)
-    for trou in evidements_cg:
-        trou = nettoyer_polygone(trou)
-        if len(trou) >= 3:
-            res_v += _integrer_polygone(trou, eps0, alpha, beta, 'ELS', C=C)
-
-    Nc, Mc_y, Mc_z = (res_c - res_v)[:3]
-
-    # ── Acier
-    Ns = Msy = Msz = 0.0
-    if p_acier is not None and len(p_acier) > 0:
-        acier_data = acier_G(p_acier, s_acier)
-        if len(acier_data) > 0:
-            acier = np.array(acier_data, dtype=float)
-            x_s = acier[:,0] - Cx;  y_s = acier[:,1] - Cy
-            eps_s = eps0 + alpha*x_s + beta*y_s
-            sig_s = sigma_s_lin1(eps_s, a_com)
-            forces = sig_s * acier[:,2]
-            Ns  = np.sum(forces)
-            Msy = np.sum(forces * y_s)
-            Msz = np.sum(forces * x_s)
-
-    return Ns+Nc, Msy+Mc_y, Msz+Mc_z
 
 
 @func
@@ -597,50 +368,36 @@ def e_resultats_GG_ELS(polygon1, evi, p_acier, s_acier,
 # ─────────────────────────────────────────────────────────────
 
 @func
-def calculer_N_My_Mz_ELU_pararect(
-    polygon1, evi, p_acier, s_acier,
-    a_com, fck, fcd, fyd, k, eps_uk, eps_ud,
-    eps0, alpha, beta
-):
-    """
-    ELU — N, My, Mz par Green analytique EXACT.
-    Loi béton : parabole-rectangle n=2 (C20-C50, EC2 §3.1.7).
-    3 zones T/P/R — indépendant du sens de saisie du polygone.
-    """
-    contour_cg, evidements_cg, Cx, Cy = transformation_repere_cg(polygon1, evi)
-    if contour_cg is None:
-        return 0.0, 0.0, 0.0
+def calculer_N_My_Mz_ELU_pararect(polygon1,evi,p_acier,s_acier,
+                                 a_com,fck,fcd,fyd,k,eps_uk,eps_ud,
+                                 eps0,a,b):
 
+    contour,_,Cx,Cy = transformation_repere_cg(polygon1,evi)
+    if contour is None:
+        return 0,0,0
+
+    contour = nettoyer_polygone(contour)
     e2 = float(eps_c2(fck))
 
-    contour_cg = nettoyer_polygone(contour_cg)
-    res_c = _integrer_polygone(contour_cg, eps0, alpha, beta,
-                               'ELU', fcd=fcd, e2=e2)
-    res_v = np.zeros(4)
-    for trou in evidements_cg:
-        trou = nettoyer_polygone(trou)
-        if len(trou) >= 3:
-            res_v += _integrer_polygone(trou, eps0, alpha, beta,
-                                        'ELU', fcd=fcd, e2=e2)
+    res = _integrer_polygone(contour,eps0,a,b,'ELU',fcd=fcd,e2=e2)
 
-    Nc, Mc_y, Mc_z = (res_c - res_v)[:3]
+    Nc,Myc,Mzc = res[:3]
 
-    # ── Acier
-    Ns = Msy = Msz = 0.0
-    if p_acier is not None and len(p_acier) > 0:
-        acier_data = acier_G(p_acier, s_acier)
-        if len(acier_data) > 0:
-            acier = np.array(acier_data, dtype=float)
-            x_s = acier[:,0] - Cx;  y_s = acier[:,1] - Cy
-            eps_s = eps0 + alpha*x_s + beta*y_s
-            sig_s = sigma_s_palier1(fyd, k, eps_uk, eps_ud, eps_s, a_com)
-            forces = sig_s * acier[:,2]
-            Ns  = np.sum(forces)
-            Msy = np.sum(forces * y_s)
-            Msz = np.sum(forces * x_s)
+    Ns=Mys=Mzs=0
 
-    return Ns+Nc, Msy+Mc_y, Msz+Mc_z
+    acier = acier_G(p_acier,s_acier)
+    if len(acier)>0:
+        ac=np.array(acier)
+        x=ac[:,0]-Cx
+        y=ac[:,1]-Cy
+        eps=eps0+a*x+b*y
+        sig=sigma_s_palier1(fyd,k,eps_uk,eps_ud,eps,a_com)
+        F=sig*ac[:,2]
+        Ns=np.sum(F)
+        Mys=np.sum(F*y)
+        Mzs=np.sum(F*x)
 
+    return Ns+Nc, Mys+Myc, Mzs+Mzc
 
 @func
 def solve_GG_ELU_pararect(polygon1, evi, p_acier, s_acier,
