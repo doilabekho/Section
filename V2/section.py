@@ -382,7 +382,7 @@ def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
     # aire comprimée UNIQUEMENT
     Sc_ = dy * (x1 + dx/2.0)
 
-    return np.array([N_, My_, Mz_, Sc_])
+    return np.array([N_, My_, Mz_])
 
 # ──────────────────────────────────────────────────────────────
 # ELU — zone R (σ = fcd)
