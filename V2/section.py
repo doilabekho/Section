@@ -21,6 +21,25 @@ from acier import *   # ← fonctionne en local et sur GitHub
 
 
 
+# section.py — version finale complète
+# Intégration analytique EXACTE par théorème de Green
+# ELS et ELU — indépendant du sens de saisie du polygone
+
+import numpy as np
+from scipy.optimize import root
+from xlwings import func
+
+from beton import (
+    sgn, eps_c2, eps_n,
+    sigma_c_n, eps_c_n,
+    sigma_c_pararect, epsilon_c_pararect,
+    sigma_c_n1, sigma_c_pararect1,
+)
+from acier import (
+    sigma_s_palier, sigma_s_palier1, eps_s_palier,
+    sigma_s_lin, eps_s_lin, sigma_s_lin1,
+)
+
 
 # ═══════════════════════════════════════════════════════════════
 # BLOC 1 — UTILITAIRES GÉOMÉTRIQUES
@@ -188,6 +207,83 @@ def aire_et_centre(data):
     if A==0: return 0.0, None, None
     return abs(A), Cx/(6*A), Cy/(6*A)
 
+
+# ═══════════════════════════════════════════════════════════════
+# BLOC 2 — NOYAU GREEN ANALYTIQUE EXACT
+# ═══════════════════════════════════════════════════════════════
+#
+# Théorème de Green :  ∬_Ω f(x,y) dA = ∮_∂Ω Q(x,y) dy
+# avec ∂Q/∂x = f(x,y)
+#
+# Correction du sens : aire_signee = Σ (x1·y2 - x2·y1)/2
+# Si aire_signee < 0 (sens horaire), on inverse le signe du résultat.
+#
+# ── DÉCOUPAGE EN ZONES ──────────────────────────────────────
+# Pour ELS : zones T (ε≤0, σ=0) et C (ε>0, σ=C·ε)
+# Pour ELU : zones T (ε≤0), P (0<ε≤e2), R (ε>e2)
+#
+# Chaque arête est découpée aux t∈(0,1) où ε=0 et ε=e2.
+# Sur chaque sous-segment la zone est constante.
+#
+# ── PRIMITIVES EXACTES ──────────────────────────────────────
+#
+# Paramétrage arête : x(t)=xa+t·dx, y(t)=ya+t·dy, t∈[0,1]
+# Notation : ta..tb = sous-intervalle après reparamétrisation en s∈[0,1]
+# Sur [ta,tb] : s∈[0,1], x=x1+s·Δx, y=y1+s·Δy, ε=εa+s·Δε
+# avec x1=xa+ta·dx, Δx=(tb-ta)·dx, etc.
+#
+# INTÉGRALES ÉLÉMENTAIRES sur [0,1] :
+#   ∫s^k ds = 1/(k+1)
+#   Notons : εa, Δε, x1, Δx, y1, Δy
+#
+# ELS Zone C (σ=C·ε) :
+#   N  = C·Δy·∫(εa+Δε·s) ds
+#      = C·Δy·(εa + Δε/2)
+#
+#   My = C·Δy·∫(εa+Δε·s)·(y1+Δy·s) ds
+#      = C·Δy·[εa·y1 + (εa·Δy+y1·Δε)/2 + Δε·Δy/3]
+#
+#   Mz = C·Δy·∫(εa+Δε·s)·(x1+Δx·s) ds
+#      = C·Δy·[εa·x1 + (εa·Δx+x1·Δε)/2 + Δε·Δx/3]
+#
+#   Scom = Δy·∫(x1+Δx·s) ds = Δy·(x1 + Δx/2)
+#
+# ELU Zone R (σ=fcd) :
+#   N  = fcd·Δy
+#   My = fcd·Δy·(y1 + Δy/2)
+#   Mz = fcd·Δy·(x1 + Δx/2)
+#   Scom = Δy·(x1 + Δx/2)   [même que ELS zone C]
+#
+# ELU Zone P (σ=fcd·(2u-u²), u=ε/e2) :
+#   u(s) = (εa+Δε·s)/e2 = ua + s·Δu  (ua=εa/e2, Δu=Δε/e2)
+#
+#   σ = fcd·(2u - u²)
+#     = fcd·(2ua + 2Δu·s - ua² - 2ua·Δu·s - Δu²·s²)
+#
+#   ∫₀¹ σ ds = fcd·(2ua + 2Δu/2 - ua² - 2ua·Δu/2 - Δu²/3)
+#            = fcd·(2ua + Δu - ua² - ua·Δu - Δu²/3)
+#
+#   ∫₀¹ σ·s ds = fcd·(2ua/2 + 2Δu/3 - ua²/2 - 2ua·Δu/3 - Δu²/4)
+#
+#   N  = fcd·Δy·I0
+#   My = fcd·Δy·(y1·I0 + Δy·I1)
+#   Mz = fcd·Δy·(x1·I0 + Δx·I1)
+#   Scom = Δy·(x1 + Δx/2)
+#
+# où I0 = ∫₀¹ σ/fcd ds,  I1 = ∫₀¹ σ/fcd · s ds
+# ═══════════════════════════════════════════════════════════════
+
+def _aire_signee(pts):
+    """Aire signée — Shoelace. + = CCW (trigonométrique), - = CW."""
+    a = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i+1) % n]
+        a += x1*y2 - x2*y1
+    return 0.5*a
+
+
 # ═══════════════════════════════════════════════════════════════
 # BLOC 2 — GREEN EXACT CORRIGÉ (VERSION PROPRE)
 # ═══════════════════════════════════════════════════════════════
@@ -349,7 +445,6 @@ def _integrer_polygone(vertices, eps0, alpha, beta,
                         eps0, alpha, beta, fcd, e2)
 
     return res
-
 
 
 # ═══════════════════════════════════════════════════════════════
