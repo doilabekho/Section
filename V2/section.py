@@ -342,10 +342,7 @@ def _geom_integrals(x1, y1, x2, y2):
 # ──────────────────────────────────────────────────────────────
 # ELS (σ = C·ε)
 # ──────────────────────────────────────────────────────────────
-
 def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
-
-   
 
     dx = x2 - x1
     dy = y2 - y1
@@ -380,6 +377,7 @@ def _contrib_ELS_exact(x1, y1, x2, y2, eps0, alpha, beta, C):
     Sc_ = dy * (x1 + dx/2.0)
 
     return np.array([N_, My_, Mz_])
+
 
 # ──────────────────────────────────────────────────────────────
 # ELU — zone R (σ = fcd)
