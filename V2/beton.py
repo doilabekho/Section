@@ -19,7 +19,7 @@ def sgn(x):
 	return np.where(x <0, -1 ,1)
 @func		
 def eps_c2(fck_array):
-    """Renvoie la déformation eps_c2 selon tableau 3.1 de NF EN 1992-1-1, en mm/m"""
+    """Renvoie la déformation eps_c2 selon formule 8.4, en mm/m"""
     # arrondi = faux pour avoir la valeur selon la formule
   
     # Conversion en array si ce n'est pas déjà le cas
@@ -27,20 +27,18 @@ def eps_c2(fck_array):
     
     # Application de la loi : 2 si fck <= 50, sinon formule complexe
     # np.where(condition, valeur_si_vrai, valeur_si_faux)
-    eps = np.where(fck <= 50, 
-                   2.0, 
-                   2.0 + 0.085 * (fck - 50)**0.53)
+    eps = 2.0
     return eps	
 
 @func    
 def eps_n(fck_array):
-    """Renvoie le coefficient n selon tableau 3.1 de NF EN 1992-1-1"""
+    """Renvoie le coefficient n selon formule 8.4"""
     # arrondi = faux pour avoir la valeur selon la formule
   
     fck = np.asarray(fck_array)
     
-    # eps = 2 si fck <= 50, sinon formule décroissante selon fck
-    eps = np.where(fck <= 50, 2.0, 1.4 + 23.4 * ((90 - fck) / 100)**4)
+    
+    eps = 2
     return eps	
 @func		
 def sigma_c_n(eps_c_array, n_array):
