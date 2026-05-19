@@ -29,7 +29,17 @@ def eps_c2(fck_array):
     # np.where(condition, valeur_si_vrai, valeur_si_faux)
     eps = 2.0
     return eps	
+@func
+def eps_cu2(fck):
+    """Renvoie la déformation eps_cu2 selon tableau 3.1 de NF EN 1992-1-1, en mm/m"""
+    # arrondi = faux pour avoir la valeur selon la formule
+  
+    if fck <= 50:
+        eps = 3.5
+    else:
+        eps = 2.6 + 35 * ((90 - fck) / 100) ** 4
 
+    return eps
 @func    
 def eps_n(fck_array):
     """Renvoie le coefficient n selon formule 8.4"""
