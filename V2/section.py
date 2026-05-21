@@ -439,6 +439,741 @@ def _aire_signee(pts):
 
 def _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, seuils):
     """
+    Découpe l'arête aux t∈(0,1) où ε = seuil.
+    Retourne liste de (x1,y1,x2,y2,eps_milieu).
+    """
+    ea = eps0 + alpha*xa + beta*ya
+    eb = eps0 + alpha*xb + beta*yb
+
+    cuts = [0.0]
+    de = eb - ea
+    for s in seuils:
+        if abs(de) > 1e-15:
+            t = (s - ea) / de
+            if 1e-12 < t < 1.0 - 1e-12:
+                cuts.append(t)
+    cuts.append(1.0)
+    cuts = sorted(set(cuts))
+
+    segments = []
+    for k in range(len(cuts)-1):
+        t1, t2 = cuts[k], cuts[k+1]
+        tm = 0.5*(t1+t2)
+        x1 = xa + t1*(xb-xa);  y1 = ya + t1*(yb-ya)
+        x2 = xa + t2*(xb-xa);  y2 = ya + t2*(yb-ya)
+        em = ea + tm*(eb-ea)
+        segments.append((x1, y1, x2, y2, em))
+    return segments
+
+
+# ── Moments polynomiaux sur [0,1] ───────────────────────────────────
+# On note p(s) = p0 + s·dp  pour tout paramètre linéaire en s.
+# ∫₀¹ p^k · s^j ds se calcule par binôme.
+#
+# Fonctions utilitaires :
+def _I(a, da, b, db, p, q):
+    """
+    ∫₀¹ (a+da·s)^p · (b+db·s)^q ds  pour p,q ∈ {0,1,2,3} entiers.
+    Développé par binôme et intégré terme à terme.
+    Retourne valeur scalaire.
+    """
+    # Développement binomial de (a+da·s)^p et (b+db·s)^q
+    from math import comb
+    total = 0.0
+    for i in range(p+1):
+        ci = comb(p, i) * (a**(p-i)) * (da**i)
+        for j in range(q+1):
+            cj = comb(q, j) * (b**(q-j)) * (db**j)
+            total += ci * cj / (i+j+1)
+    return total
+
+
+def _contrib_Scom(x1, y1, x2, y2):
+    """
+    Contribution à S_com = ∬ 1 dA sur zone comprimée.
+    Q = x  →  ∮ Q dy = ∫₀¹ x(s)·Δy ds = Δy·(x1 + Δx/2)
+    """
+    dx = x2-x1;  dy = y2-y1
+    return dy * (x1 + dx/2.0)
+
+
+import datetime as dt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import xlwings as xw
+from xlwings import func, script
+import matplotlib
+import scipy
+import math
+from scipy.optimize import root, fsolve
+from matplotlib.path import Path
+from scipy.spatial import Delaunay
+import matplotlib.pyplot as plt
+
+
+@func
+def sgn(x):
+	# renvoie signe 1 / -1
+	return np.where(x <0, -1 ,1)
+@func		
+def eps_c2(fck_array):
+    """Renvoie la déformation eps_c2 selon tableau 3.1 de NF EN 1992-1-1, en mm/m"""
+    # arrondi = faux pour avoir la valeur selon la formule
+  
+    # Conversion en array si ce n'est pas déjà le cas
+    fck = np.asarray(fck_array)
+    
+    # Application de la loi : 2 si fck <= 50, sinon formule complexe
+    # np.where(condition, valeur_si_vrai, valeur_si_faux)
+    eps = np.where(fck <= 50, 
+                   2.0, 
+                   2.0 + 0.085 * (fck - 50)**0.53)
+    return eps	
+
+@func    
+def eps_n(fck_array):
+    """Renvoie le coefficient n selon tableau 3.1 de NF EN 1992-1-1"""
+    # arrondi = faux pour avoir la valeur selon la formule
+  
+    fck = np.asarray(fck_array)
+    
+    # eps = 2 si fck <= 50, sinon formule décroissante selon fck
+    eps = np.where(fck <= 50, 2.0, 1.4 + 23.4 * ((90 - fck) / 100)**4)
+    return eps	
+@func		
+def sigma_c_n(eps_c_array, n_array):
+    """
+    Version vectorisée pour la contrainte béton fissuré.
+    Module Acier = 200 000 MPa.
+    n = coefficient d'équivalence (ex: 15).
+    eps_c_array : déformation en mm/m.
+    """
+    # On s'assure que ce sont des tableaux NumPy
+    eps = np.asarray(eps_c_array)
+    n = np.asarray(n_array)
+
+    # sigma = (Es / n) * eps
+    # Le /1000 convertit les mm/m en déformation relative (sans unité)
+    sigma = (200000 / n) * (eps / 1000)
+
+    # Le béton fissuré ne reprend pas de traction (eps < 0)
+    # np.maximum(0, sigma) remplace toutes les valeurs négatives par 0
+    return np.maximum(0, sigma)
+@func
+def eps_c_n(sig_c_array, n_array):
+    """
+    Version vectorisée : renvoie la déformation eps_c (en mm/m)
+    sig_c_array : contrainte béton (MPa)
+    n_array : coefficient d'équivalence Es/Ec
+    """
+    sig = np.asarray(sig_c_array)
+    n = np.asarray(n_array)
+
+    # Calcul de la déformation : epsilon = (n / Es) * sigma * 1000
+    # Le * 1000 permet de repasser en mm/m (unité standard Eurocode)
+    epsilon = (1000 * n / 200000) * sig
+
+    # Gestion du cas sig_c <= 0 (Béton fissuré/tendu)
+    # On remplace les valeurs où sig <= 0 par np.nan (ou 0.0 selon votre besoin)
+    return np.where(sig > 0, epsilon, 0.0)
+@func		
+def sigma_c_pararect(fck, fcd, eps_c_array):
+    """
+    Version vectorisée de la loi parabole-rectangle (EC2, 3.1.7).
+    fck, fcd : valeurs scalaires (ou tableaux)
+    eps_c_array : tableau des déformations (mm/m)
+    """
+    eps_c = np.asarray(eps_c_array)
+    
+    # Récupération des paramètres (en utilisant nos versions vectorisées précédentes)
+    e2 = eps_c2(fck)
+    n = eps_n(fck)
+
+    # Définition des conditions
+    conditions = [
+        (eps_c <= 0),                          # 1. Zone tendue (fissurée)
+        (eps_c > 0) & (eps_c <= e2),           # 2. Zone parabolique
+        (eps_c > e2)                           # 3. Zone rectangulaire (palier)
+    ]
+
+    # Définition des formules correspondantes
+    choix = [
+        0.0,                                   # 1. sigma = 0
+        fcd * (1 - (1 - eps_c / e2)**n),       # 2. sigma = fcd * [1 - (1 - eps/eps2)^n]
+        fcd                                    # 3. sigma = fcd
+    ]
+
+    return np.select(conditions, choix)
+@func
+def epsilon_c_pararect(fck, fcd, sig_c_array):
+    sig = np.asarray(sig_c_array)
+    e2 = eps_c2(fck)
+    n = eps_n(fck)
+
+    # On sature pour éviter les erreurs de racine (1/n)
+    sig_safe = np.clip(sig, 0, fcd * 0.99999999999999999999999)
+
+    # Calcul analytique
+    epsilon = e2 * (1 - (1 - sig_safe / fcd)**(1/n))
+
+    # Gestion des masques
+    # Si sigma <= 0 : déformation = 0.0
+    # Si sigma >= fcd : déformation = e2 (début du palier)
+    resultat = np.select([sig <= 0, sig >= fcd], [0.0, e2], default=epsilon)
+    
+    return resultat
+	
+@func
+def sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_s_array):
+    """renvoie la contrainte acier (fe500 classe B) selon 3.2.7 de NF EN 1992-1-1"""
+    eps_s =np.array(eps_s_array)
+    eps_sd = fyd / 200000 * 1000 
+
+    
+    sigma1 = 200000 * eps_s / 1000 # if abs(eps_s) <= eps_sd:
+   
+    sigma2 = sgn(eps_s)* (fyd + (k * fyd - fyd)/(eps_uk - eps_sd) * (np.abs(eps_s) - eps_sd)) #  else:   
+    return  np.where(np.abs(eps_s) > eps_sd, sigma2, sigma1)	
+	
+@func
+def sigma_s_palier1(fyd, k, eps_uk,eps_ud, eps_s_array,a_com):
+    """renvoie la contrainte acier (fe500 classe B) selon 3.2.7 de NF EN 1992-1-1"""
+    eps_s =np.array(eps_s_array)
+
+    
+    sigma1 =sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_s)*a_com # if eps_s > 0.0:
+    sigma2 = sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_s)   # else:
+    return  np.where(eps_s > 0, sigma1, sigma2)
+@func
+def eps_s_palier(fyd, k, eps_uk, eps_ud, sig_s_array):
+    """
+    Version vectorisée analytique : calcule la déformation eps_s à partir de sig_s.
+    sig_s_array : tableau des contraintes (MPa)
+    """
+    sig = np.asarray(sig_s_array)
+    Es = 200000
+    eps_sd = (fyd / Es) * 1000
+    
+    # Préparation des paramètres de la pente plastique
+    # Attention : si k=1 (palier horizontal), la déformation n'est pas unique.
+    # On gère le cas k > 1
+    pente_inv = (eps_uk - eps_sd) / (k * fyd - fyd) if k > 1 else 0
+    
+    abs_sig = np.abs(sig)
+    
+    # 1. Calcul pour la zone élastique
+    eps_elaste = (sig / Es) * 1000
+    
+    # 2. Calcul pour la zone plastique (branche inclinée)
+    eps_plast = np.sign(sig) * (eps_sd + (abs_sig - fyd) * pente_inv)
+    
+    # 3. Assemblage des conditions
+    # Note : Si sig_s == 0, on renvoie 0.0 au lieu de None pour la compatibilité
+    conditions = [
+        (sig == 0),                          # Cas sigma nul
+        (abs_sig <= fyd),                    # Zone élastique
+        (abs_sig > fyd) & (abs_sig <= k*fyd) # Zone plastique
+    ]
+    
+    choix = [
+        0.0,
+        eps_elaste,
+        eps_plast
+    ]
+    
+    # On renvoie 0.0 par défaut si sigma est hors limites
+    return np.select(conditions, choix, default=0.0)
+	
+@func
+def sigma_s_lin(eps_s_array):
+    """
+    Version vectorisée de la loi acier linéaire infinie.
+    E = 200 000 MPa (pas de palier plastique).
+    eps_s_array : déformation en mm/m.
+    """
+    # On s'assure que l'entrée est un tableau
+    eps = np.asarray(eps_s_array)
+    
+    # sigma = E * epsilon
+    # Le /1000 convertit les mm/m en déformation relative (sans unité)
+    return 200000 * eps / 1000
+	
+@func
+def eps_s_lin(sig_s_array):
+    """
+    Version vectorisée : renvoie la déformation eps_s (en mm/m).
+    Loi élastique linéaire infinie (E = 200 000 MPa).
+    sig_s_array : contrainte acier (MPa).
+    """
+    # Conversion en array NumPy
+    sig = np.asarray(sig_s_array)
+    
+    # epsilon = (sigma / E) * 1000 pour avoir des mm/m
+    return 1000 * sig / 200000	
+	
+@func
+def sigma_s_lin1(eps_s, a_com):
+    """
+    Loi acier linéaire avec coefficient de pondération a_com.
+    Appliqué si eps_s > 0 (traction).
+    """
+    eps = np.asarray(eps_s)
+    # Calcul de la contrainte de base (E = 200 000 MPa)
+    sig_base = 200000 * eps / 1000
+    
+    # On multiplie par a_com uniquement là où eps_s > 0
+    return np.where(eps > 0.0, sig_base * a_com, sig_base)
+
+
+@func
+def sigma_c_n1(eps_c, n):
+    """
+    Loi béton fissuré. 
+    Utilise une fonction de transfert pour annuler la traction sans np.where.
+    """
+    eps = np.asarray(eps_c)
+    eps_abs = np.abs(eps)
+    
+    # Le terme (eps + eps_abs) / (2 * eps_abs + 1e-15) agit comme un filtre :
+    # Si eps > 0  => (eps + eps) / (2 * eps) = 1
+    # Si eps < 0  => (eps - eps) / (2 * eps) = 0
+    # Le 1e-15 est le "garde-fou" contre la division par zéro.
+    
+    filtre = (eps + eps_abs) / (2 * eps_abs + 1e-30)
+    sigma = (200000 / n * eps / 1000) * filtre
+    return sigma
+
+
+
+@func
+def sigma_c_pararect1(fck, fcd, eps_c_array):
+    eps_c=np.array(eps_c_array)
+    eps_c2_val = eps_c2(fck)
+    eps_n_val = eps_n(fck)
+    term1 = np.abs(1 - eps_c / eps_c2_val)
+    term2 = (1 - eps_c / eps_c2_val)
+    sigma = fcd * (1 - (term1 + term2) / (2 * term1 + 1e-30) * term1 ** eps_n_val) * (eps_c + np.abs(eps_c)) / (2 * np.abs(eps_c) + 1e-30)
+    return sigma
+
+
+@func
+
+def acier_G(p_acier, s_acier):
+    """
+    Construit la liste des armatures acier [x, y, section],
+    en supprimant UNIQUEMENT les lignes non remplies.
+    Les sections nulles ou négatives sont conservées.
+    """
+
+    if p_acier is None or len(p_acier) == 0:
+        return None, None, None
+
+    p_acier = np.atleast_2d(p_acier)
+    s_acier = np.atleast_1d(s_acier)
+
+    newacier = []
+
+    nx = min(p_acier.shape[0], s_acier.shape[0])
+
+    for i in range(nx):
+        try:
+            # nettoyage UNIQUEMENT des coordonnées vides
+            if p_acier[i, 0] in (None, "", " ") or p_acier[i, 1] in (None, "", " "):
+                continue
+
+            x = float(p_acier[i, 0])
+            y = float(p_acier[i, 1])
+            s = float(s_acier[i])   # peut être 0 ou négatif → CONSERVÉ ✅
+
+            newacier.append([x, y, s / 10000.0])  # mm² → cm²
+
+        except (ValueError, TypeError, IndexError):
+            # ignore uniquement les lignes vraiment invalides
+            continue
+
+    return newacier
+
+###########################################################"##"
+# travailler avec les liste pour évidement et transformer donnée
+#######################################################
+
+@func
+def n_liste(data):
+    """
+    Compte le nombre de séparateurs 'fin / fin',
+    insensible à la casse et aux espaces.
+    """
+    count = 0
+
+    for row in data:
+        if len(row) >= 2:
+            v0 = str(row[0]).strip().lower()
+            v1 = str(row[1]).strip().lower()
+            if v0 == "fin" or v1 == "fin":
+                count += 1
+
+    return count
+@func
+def liste_i(data, i):
+    """
+    Retourne la i-ème sous-liste séparée par 'fin / fin'
+    (insensible à la casse et aux espaces).
+    """
+    fins = []
+
+    for idx, row in enumerate(data):
+        if len(row) >= 2:
+            v0 = str(row[0]).strip().lower()
+            v1 = str(row[1]).strip().lower()
+            if v0 == "fin" or v1 == "fin":
+                fins.append(idx)
+
+    # sécurité
+    if i < 1 or i > len(fins):
+        return []
+
+    start = 0 if i == 1 else fins[i - 2] + 1
+    end = fins[i - 1]
+
+    return data[start:end]
+
+    return data[start:end]
+@func
+def points_valides(data):
+    pts = []
+    for row in data:
+        if len(row) >= 2:
+            try:
+                x = float(row[0])
+                y = float(row[1])
+                pts.append((x, y))
+            except:
+                pass
+    return pts
+@func
+def centre_gravite_polygone(data):
+    pts = points_valides(data)
+    n = len(pts)
+
+    if n < 3:
+        return None, None
+
+    A = 0.0
+    Cx = 0.0
+    Cy = 0.0
+
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        cross = x1 * y2 - x2 * y1
+        A += cross
+        Cx += (x1 + x2) * cross
+        Cy += (y1 + y2) * cross
+
+    A *= 0.5
+    if A == 0:
+        return None, None
+
+    Cx /= (6 * A)
+    Cy /= (6 * A)
+
+    return Cx, Cy
+@func
+def aire_et_centre(data):
+    pts = points_valides(data)
+    n = len(pts)
+
+    if n < 3:
+        return 0.0, None, None
+
+    A = 0.0
+    Cx = 0.0
+    Cy = 0.0
+
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        cross = x1 * y2 - x2 * y1
+        A += cross
+        Cx += (x1 + x2) * cross
+        Cy += (y1 + y2) * cross
+
+    A *= 0.5
+    if A == 0:
+        return 0.0, None, None
+
+    Cx /= (6 * A)
+    Cy /= (6 * A)
+
+    return abs(A), Cx, Cy
+@func
+def aire_centre_inertie_origine(data):
+    pts = points_valides(data)
+    n = len(pts)
+
+    if n < 3:
+        return 0.0, None, None, 0.0, 0.0
+
+    A = 0.0
+    Cx = 0.0
+    Cy = 0.0
+    Ix = 0.0
+    Iy = 0.0
+
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        cross = x1 * y2 - x2 * y1
+
+        A += cross
+        Cx += (x1 + x2) * cross
+        Cy += (y1 + y2) * cross
+
+        Ix += (y1**2 + y1*y2 + y2**2) * cross
+        Iy += (x1**2 + x1*x2 + x2**2) * cross
+
+    A *= 0.5
+    if A == 0:
+        return 0.0, None, None, 0.0, 0.0
+
+    Cx /= (6 * A)
+    Cy /= (6 * A)
+    Ix /= 12
+    Iy /= 12
+
+    return np.abs(A), Cx, Cy, np.abs(Ix), np.abs(Iy)
+@func
+def caracteristiques_mecaniques(contour, evidement):
+    A, Cx, Cy, Ix0, Iy0 = aire_centre_inertie_origine(contour)
+
+    if A == 0:
+        return 0.0, None, None, 0.0, 0.0
+
+    A_tot = A
+    Cx_tot = A * Cx
+    Cy_tot = A * Cy
+    Ix_tot = Ix0
+    Iy_tot = Iy0
+
+    N = n_liste(evidement)
+
+    for i in range(1, N + 1):
+        Li = liste_i(evidement, i)
+        Ai, cxi, cyi, ixi, iyi = aire_centre_inertie_origine(Li)
+
+        if Ai > 0:
+            A_tot -= Ai
+            Cx_tot -= Ai * cxi
+            Cy_tot -= Ai * cyi
+            Ix_tot -= ixi
+            Iy_tot -= iyi
+
+    if A_tot == 0:
+        return 0.0, None, None, 0.0, 0.0
+
+    CxG = Cx_tot / A_tot
+    CyG = Cy_tot / A_tot
+
+    IxG = Ix_tot - A_tot * CyG**2
+    IyG = Iy_tot - A_tot * CxG**2
+
+    return np.abs(A_tot), CxG, CyG, np.abs(IxG), np.abs(IyG)
+@func
+def translation_points(data, Cx, Cy):
+    """
+    Transforme une liste de points dans le repère centré en (Cx, Cy)
+    """
+    pts_trans = []
+
+    for row in data:
+        if len(row) >= 2:
+            try:
+                x = float(row[0])
+                y = float(row[1])
+                pts_trans.append((x - Cx, y - Cy))
+            except:
+                pass  # ignore lignes vides ou non numériques
+
+    return pts_trans
+
+@func
+def transformation_repere_cg(contour, evidement):
+    """
+    Calcule le centre de gravité global puis transforme les coordonnées
+    du contour et des évidements dans le repère centré (Cx, Cy).
+    Retour :
+    - contour_cg        : liste de points transformés
+    - evidements_cg     : liste de listes (vide si N = 0)
+    - Cx, Cy            : centre de gravité global
+    """
+
+    # --- Calcul du centre de gravité global
+    A, Cx, Cy, Ix, Iy = caracteristiques_mecaniques(contour, evidement)
+
+    if Cx is None or Cy is None:
+        return None, [], None, None
+
+    # --- Contour transformé
+    contour_cg = translation_points(contour, Cx, Cy)
+
+    # --- Évidements transformés (séparés)
+    evidements_cg = []
+    N = n_liste(evidement)
+
+    if N == 0:
+        # Aucun évidement
+        return contour_cg, evidements_cg, Cx, Cy
+
+    for i in range(1, N + 1):
+        Li = liste_i(evidement, i)
+        Li_cg = translation_points(Li, Cx, Cy)
+        evidements_cg.append(Li_cg)
+
+    return  contour_cg, evidements_cg, Cx, Cy
+
+@func
+def nettoyer_polygone(points, tol=1e-9):
+    """
+    Supprime le dernier point s'il est égal au premier
+    à une tolérance numérique près.
+    """
+    if len(points) < 2:
+        return points
+
+    x1, y1 = points[0]
+    x2, y2 = points[-1]
+
+    if abs(x1 - x2) < tol and abs(y1 - y2) < tol:
+        return points[:-1]
+
+    return points
+
+
+# ═══════════════════════════════════════════════════════════════
+# BLOC 2 — NOYAU GREEN ANALYTIQUE EXACT
+# ═══════════════════════════════════════════════════════════════
+#
+# Théorème de Green :  ∬_Ω f dA = ∮_∂Ω Q(x,y) dy  avec ∂Q/∂x = f
+#
+# Arête paramétrée : x(s)=xa+s·Δx, y(s)=ya+s·Δy, s∈[0,1]
+# ∮ Q dy = Σ_arêtes ∫₀¹ Q(x(s),y(s))·Δy ds
+#
+# ── PRIMITIVES Q (∂Q/∂x = f) ────────────────────────────────
+#
+# ══ ELS Zone C : f = C·ε = C·(ε₀+α·x+β·y) ══════════════════
+#   Q_N  = C·(ε₀·x + α·x²/2 + β·x·y)
+#   Q_My = C·(ε₀·x·y + α·x²·y/2 + β·x·y²)
+#   Q_Mz = C·(ε₀·x²/2 + α·x³/3 + β·x²·y/2)
+#   Q_Sc = x                                  [f=1 zone comprimée]
+#
+# Sur arête (s∈[0,1]) :
+#   Notations : x=xa+s·Δx, y=ya+s·Δy
+#   Moments : ∫s^k ds = 1/(k+1)
+#   ∫x ds   = xa + Δx/2
+#   ∫x² ds  = xa² + xa·Δx + Δx²/3
+#   ∫x³ ds  = xa³ + 3xa²·Δx/2 + xa·Δx² + Δx³/4
+#   ∫x·y ds = xa·ya + (xa·Δy+ya·Δx)/2 + Δx·Δy/3
+#   ∫x²·y ds= xa²·ya + xa·(ya·Δx+xa·Δy)/1... (développé ci-dessous)
+#   ∫x·y² ds= xa·ya² + (xa·2ya·Δy+ya²·Δx)/2 + xa·Δy²/3 + ya·Δx·Δy/2 + ...
+#
+#   N  = Δy · C · ∫₀¹(ε₀·x + α·x²/2 + β·x·y) ds
+#      = Δy · C · [ε₀·(xa+Δx/2) + α/2·(xa²+xa·Δx+Δx²/3) + β·(xa·ya+(xa·Δy+ya·Δx)/2+Δx·Δy/3)]
+#
+#   My = Δy · C · ∫₀¹(ε₀·x·y + α·x²·y/2 + β·x·y²) ds
+#
+#   Mz = Δy · C · ∫₀¹(ε₀·x²/2 + α·x³/3 + β·x²·y/2) ds
+#
+# ══ ELU Zone R : f = fcd ════════════════════════════════════
+#   Q_N  = fcd·x
+#   Q_My = fcd·x·y
+#   Q_Mz = fcd·x²/2
+#   Q_Sc = x
+#
+#   N  = fcd · Δy · (xa + Δx/2)
+#   My = fcd · Δy · (xa·ya + (xa·Δy+ya·Δx)/2 + Δx·Δy/3)
+#   Mz = fcd · Δy/2 · (xa² + xa·Δx + Δx²/3)
+#   Sc = Δy · (xa + Δx/2)
+#
+# ══ ELU Zone P : f = fcd·(2u-u²), u=ε/e2 ══════════════════
+#   u = (ε₀+α·x+β·y)/e2 = u₀ + (α·x+β·y)/e2
+#   u(s) = ua + s·Δu  où ua=(ε₀+α·xa+β·ya)/e2, Δu=α·Δx/e2+β·Δy/e2... 
+#   NON : u dépend de x ET y simultanément via ε = ε₀+α·x+β·y
+#
+#   Sur l'arête : u(s) = (ε₀+α·(xa+s·Δx)+β·(ya+s·Δy))/e2
+#               = ua + s·(α·Δx+β·Δy)/e2
+#               = ua + s·Δu
+#   C'est bien linéaire en s → u² est quadratique en s
+#
+#   f = fcd·(2u-u²) = fcd·(2(ua+s·Δu) - (ua+s·Δu)²)
+#     = fcd·[(2ua-ua²) + s·(2Δu-2ua·Δu) - s²·Δu²]
+#
+#   Pour N = Δy·∫₀¹ Q_N(x(s),y(s)) ds, on a besoin de Q_N :
+#   Q_N tel que ∂Q_N/∂x = fcd·(2u-u²)
+#   Or u = (ε₀+α·x+β·y)/e2, donc ∂u/∂x = α/e2
+#   ∂Q_N/∂x = fcd·(2u-u²)  →  Q_N = fcd·(u²/( α/e2) - u³/(3·α/e2))... 
+#   c'est complexe. On utilise directement l'intégrale de ligne :
+#
+#   N  = ∫_arête σ·dy = Δy · ∫₀¹ fcd·(2ua+2Δu·s - ua²-2ua·Δu·s - Δu²·s²) ds
+#      = Δy · fcd · [(2ua-ua²) + (2Δu-2ua·Δu)/2 - Δu²/3]
+#      = Δy · fcd · [2ua - ua² + Δu - ua·Δu - Δu²/3]
+#      = Δy · fcd · I0
+#
+#   My = ∫_arête σ·y·dy = Δy · ∫₀¹ fcd·(2u-u²)·(ya+Δy·s) ds
+#      = Δy · fcd · [ya·I0 + Δy·I1]
+#   où I1 = ∫₀¹(2u-u²)·s ds
+#          = (2ua-ua²)/2 + (2Δu-2ua·Δu)/3 - Δu²/4
+#
+#   Mz = ∫_arête σ·x·dy = Δy · ∫₀¹ fcd·(2u-u²)·(xa+Δx·s) ds
+#      = Δy · fcd · [xa·I0 + Δx·I1]
+#
+# IMPORTANT : Green donne ∬σ dA = ∮ Q dy
+# Pour N : ∬σ dA = ∮ Q_N dy  NON IDENTIQUE à ∮ σ·dy  !!
+# La formule correcte est :
+#   ∬ f(x,y) dA = ∮_contour Q(x,y)·dy  avec ∂Q/∂x = f
+#
+# Pour ELU zone P, f=σ(x,y) et Q_N tel que ∂Q_N/∂x = σ(x,y) :
+#   σ = fcd·(2ε/e2 - ε²/e2²)
+#   ε = ε₀ + α·x + β·y
+#   ∂σ/∂x = fcd·(2α/e2 - 2α·ε/e2²)
+#   ∂Q_N/∂x = σ  →  Q_N = fcd·(2ε·x/(e2... NON
+#   Q_N = ∫σ dx = fcd·∫(2(ε₀+αx+βy)/e2 - (ε₀+αx+βy)²/e2²) dx
+#
+#   Posons A = ε₀+βy (constant en x), B = α
+#   ε = A + B·x
+#   Q_N = fcd·∫(2(A+Bx)/e2 - (A+Bx)²/e2²) dx
+#       = fcd·[2(Ax+Bx²/2)/e2 - (A²x+ABx²+B²x³/3)/e2²]
+#       = fcd·[2Ax/e2 + Bx²/e2 - A²x/e2² - ABx²/e2² - B²x³/(3e2²)]
+#
+#   Sur l'arête, x=xa+s·Δx, y=ya+s·Δy :
+#   A(s) = ε₀ + β·(ya+s·Δy)  → dépend de s via y !
+#   Donc Q_N(x(s),y(s)) n'est pas simplement évaluable.
+#
+#   SOLUTION : On intègre directement ∫₀¹ Q_N(x(s),y(s))·Δy ds
+#   en substituant x=xa+s·Δx et y=ya+s·Δy :
+#   A(s) = ε₀+β·ya + β·Δy·s = A0 + dA·s  avec A0=ε₀+β·ya, dA=β·Δy
+#   B = α (constant)
+#   x(s) = xa + Δx·s
+#
+#   Q_N(s) = fcd·[2A(s)x(s)/e2 + B·x²(s)/e2
+#                 - A²(s)·x(s)/e2² - A(s)B·x²(s)/e2² - B²·x³(s)/(3e2²)]
+#
+#   Chaque terme est un polynôme en s de degré ≤ 3 → intégrable exactement.
+# ═══════════════════════════════════════════════════════════════
+
+def _aire_signee(pts):
+    """Aire signée — Shoelace. + = CCW, - = CW."""
+    a = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i+1) % n]
+        a += x1*y2 - x2*y1
+    return 0.5*a
+
+
+def _decouper_arete(xa, ya, xb, yb, eps0, alpha, beta, seuils):
+    """
     Découpe l'arête aux t ∈ (0,1) où ε = seuil.
     Sécurisé pour les sections en I : préserve TOUJOURS l'orientation
     géométrique originale de l'arête pour ne pas fausser S_com.
@@ -697,6 +1432,7 @@ def _contrib_ELU_P(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2):
 
     return np.array([N_, My_, Mz_])
 
+    
 def domaines_comprimes(contour, eps0, alpha, beta):
 
     def eps(x,y):
@@ -745,118 +1481,160 @@ def domaines_comprimes(contour, eps0, alpha, beta):
         domaines.append(poly)
 
     return domaines
-def _integrer_polygone(vertices, eps0, alpha, beta,
-                       mode, C=None, fcd=None, e2=None):
 
-    pts = np.asarray(vertices, dtype=float)
+from shapely.geometry import Polygon, LineString, MultiPolygon, GeometryCollection
+from shapely.ops import split
+
+def _orienter_polygone_ccw(pts):
+    """
+    Force un polygone orienté anti-horaire (CCW)
+    """
+
+    pts = np.asarray(pts)
+
+    A = 0.0
     n = len(pts)
 
-    if n < 3:
-        return np.zeros(4)
-
-    def eps(x, y):
-        return eps0 + alpha * x + beta * y
-
-    # =========================================================
-    # 1. DECOUPAGE DES DOMAINES COMPRIMES (MULTIPLES)
-    # =========================================================
-
-    domaines = []
-    courant = []
-
     for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i+1) % n]
+        A += x1*y2 - x2*y1
 
-        xa, ya = pts[i]
-        xb, yb = pts[(i+1) % n]
+    if A < 0:
+        return pts[::-1]   # inversion
+    else:
+        return pts
 
-        ea = eps(xa, ya)
-        eb = eps(xb, yb)
+def _zones_comprimees(vertices, eps0, alpha, beta):
 
-        # ---- entrée dans compression
-        if ea <= 0 and eb > 0:
-            t = -ea / (eb - ea)
-            xi = xa + t*(xb-xa)
-            yi = ya + t*(yb-ya)
+    poly = Polygon(vertices)
 
-            courant = [(xi, yi), (xb, yb)]
+    if not poly.is_valid or poly.area == 0:
+        return []
 
-        # ---- sortie de compression
-        elif ea > 0 and eb <= 0:
-            t = -ea / (eb - ea)
-            xi = xa + t*(xb-xa)
-            yi = ya + t*(yb-ya)
+    # droite ε = 0
+    L = 1e4
 
-            courant.append((xi, yi))
-            domaines.append(courant)
-            courant = []
+    if abs(beta) > 1e-12:
+        x_vals = [-L, L]
+        y_vals = [(-eps0 - alpha*x) / beta for x in x_vals]
+    else:
+        if abs(alpha) < 1e-12:
+            return [poly] if eps0 > 0 else []
+        x = -eps0 / alpha
+        x_vals = [x, x]
+        y_vals = [-L, L]
 
-        # ---- segment entièrement comprimé
-        elif ea > 0 and eb > 0:
-            if not courant:
-                courant = [(xa, ya)]
-            courant.append((xb, yb))
+    line = LineString(list(zip(x_vals, y_vals)))
 
-        # ---- traction → rien
+    try:
+        result = split(poly, line)
+    except:
+        return []
 
-    if courant:
-        domaines.append(courant)
+    # ---------------------------------
+    # ✅ gestion robuste des types
+    # ---------------------------------
+    zones = []
 
-    # =========================================================
-    # 2. INTEGRATION AVEC TES FONCTIONS EXISTANTES
-    # =========================================================
+    def traiter_geom(g):
+        if g.is_empty:
+            return
 
-    res = np.zeros(4)
+        if g.geom_type == 'Polygon':
+            cx, cy = g.centroid.x, g.centroid.y
+            if eps0 + alpha*cx + beta*cy > 0:
+                zones.append(g)
 
-    for poly in domaines:
+        elif g.geom_type in ['MultiPolygon', 'GeometryCollection']:
+            for sub in g.geoms:
+                traiter_geom(sub)
 
-        if len(poly) < 3:
-            continue
+    traiter_geom(result)
 
-        poly = np.asarray(poly, dtype=float)
-        m = len(poly)
+    return zones
 
-        res_local = np.zeros(4)
+# =============================================================================
+# DÉCOUPE GÉOMÉTRIQUE PAR PLANS DE DÉFORMATION
+# =============================================================================
 
-        for i in range(m):
+def _couper_poly_par_plan(poly, eps0, alpha, beta, valeur_seuil):
+    """Coupe un polygone Shapely selon une ligne d'iso-déformation."""
+    if not poly.is_valid or poly.area == 0:
+        return []
+    
+    L = 1e4
+    if abs(beta) > 1e-12:
+        x_vals = [-L, L]
+        y_vals = [(-eps0 - alpha*x + valeur_seuil) / beta for x in x_vals]
+    else:
+        if abs(alpha) < 1e-12:
+            return [poly] if (eps0 > valeur_seuil) else []
+        x = (valeur_seuil - eps0) / alpha
+        x_vals, y_vals = [x, x], [-L, L]
 
-            x1, y1 = poly[i]
-            x2, y2 = poly[(i+1) % m]
+    line = LineString(list(zip(x_vals, y_vals)))
+    try:
+        result = split(poly, line)
+    except:
+        return [poly]
 
-            # ---- aire (toujours nécessaire pour S_com)
-            dx = x2 - x1
-            dy = y2 - y1
-            res_local[3] += dy * (x1 + dx/2.0)
+    zones = []
+    if result.geom_type == 'Polygon':
+        zones.append(result)
+    else:
+        for g in result.geoms:
+            if g.geom_type == 'Polygon' and not g.is_empty:
+                zones.append(g)
+    return zones
 
-            if mode == 'ELS':
+# =============================================================================
+# MOTEUR D'INTÉGRATION PRINCIPAL
+# =============================================================================
 
-                res_local[:3] += _contrib_ELS(
-                    x1, y1, x2, y2,
-                    eps0, alpha, beta, C
-                )
+def _integrer_polygone(vertices, eps0, alpha, beta, mode, C=None, fcd=None, e2=None):
+    poly_initial = Polygon(_orienter_polygone_ccw(np.asarray(vertices, float)))
+    res = np.zeros(4) # [N, My, Mz, S]
 
-            else:
+    # 1. Isoler d'abord la zone comprimée générale (ε > 0)
+    zones_comprimees = _couper_poly_par_plan(poly_initial, eps0, alpha, beta, 0.0)
+    
+    for zone_c in zones_comprimees:
+        cx, cy = zone_c.centroid.x, zone_c.centroid.y
+        if eps0 + alpha*cx + beta*cy <= 0:
+            continue # Élimine la partie tendue
+            
+        # Modèle ELS : Intégration directe continue sur toute la zone comprimée
+        if mode == 'ELS':
+            coords = _orienter_polygone_ccw(np.array(zone_c.exterior.coords))
+            for i in range(len(coords) - 1):
+                xa, ya, xb, yb = coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]
+                res[3] += (yb - ya) * (xa + (xb - xa) / 2.0)
+                res[:3] += _contrib_ELS(xa, ya, xb, yb, eps0, alpha, beta, C)
 
-                em = eps((x1+x2)/2.0, (y1+y2)/2.0)
-
-                if em <= e2:
-                    res_local[:3] += _contrib_ELU_P(
-                        x1, y1, x2, y2,
-                        eps0, alpha, beta, fcd, e2
-                    )
+        # Modèle ELU : Séparation stricte des sous-polygones Parabole et Rectangle
+        else:
+            sub_zones = _couper_poly_par_plan(zone_c, eps0, alpha, beta, e2)
+            
+            for sub_z in sub_zones:
+                sz_cx, sz_cy = sub_z.centroid.x, sub_z.centroid.y
+                eps_milieu = eps0 + alpha*sz_cx + beta*sz_cy
+                
+                coords = _orienter_polygone_ccw(np.array(sub_z.exterior.coords))
+                
+                # Identification de la loi par le centre de gravité du sous-polygone
+                if eps_milieu <= e2:
+                    # Sous-polygone ENTIÈREMENT dans la zone Parabole
+                    for i in range(len(coords) - 1):
+                        xa, ya, xb, yb = coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]
+                        res[3] += (yb - ya) * (xa + (xb - xa) / 2.0)
+                        res[:3] += _contrib_ELU_P(xa, ya, xb, yb, eps0, alpha, beta, fcd, e2)
                 else:
-                    res_local[:3] += _contrib_ELU_R(
-                        x1, y1, x2, y2, fcd
-                    )
-
-        res += res_local
-
-    # =========================================================
-    # 3. CORRECTION ORIENTATION GLOBALE
-    # =========================================================
-
-    if _aire_signee(pts) < 0:
-        res = -res
-
+                    # Sous-polygone ENTIÈREMENT dans la zone Rectangle (Plastifié)
+                    for i in range(len(coords) - 1):
+                        xa, ya, xb, yb = coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]
+                        res[3] += (yb - ya) * (xa + (xb - xa) / 2.0)
+                        res[:3] += _contrib_ELU_R(xa, ya, xb, yb, fcd)
     return res
 
 
@@ -866,21 +1644,24 @@ def _integrer_polygone(vertices, eps0, alpha, beta,
 
 @func
 def S_com(polygon1, evi, eps0, alpha, beta):
-    """Aire de la zone comprimée — Green exact, sans nettoyer_polygone."""
+
     contour_cg, evidements_cg, Cx, Cy = transformation_repere_cg(polygon1, evi)
-    if contour_cg is None:
-        return 0.0
 
-    res_c = _integrer_polygone(contour_cg, eps0, alpha, beta, 'ELS', C=1.0)
-    Ic = res_c[3]
+    res_c = _integrer_polygone(
+        contour_cg, eps0, alpha, beta,
+        mode='ELS', C=1.0
+    )
 
-    Iv = 0.0
+    res_v = np.zeros(4)
+
     for trou in evidements_cg:
-        if len(trou) >= 3:
-            res_t = _integrer_polygone(trou, eps0, alpha, beta, 'ELS', C=1.0)
-            Iv += res_t[3]
+        res_v += _integrer_polygone(
+            trou, eps0, alpha, beta,
+            mode='ELS', C=1.0
+        )
 
-    return Ic - Iv
+    return res_c[3] - res_v[3]
+
 
 
 @func
