@@ -1592,51 +1592,105 @@ def _couper_poly_par_plan(poly, eps0, alpha, beta, valeur_seuil):
 # MOTEUR D'INTÉGRATION PRINCIPAL
 # =============================================================================
 
-def _integrer_polygone(vertices, eps0, alpha, beta, mode, C=None, fcd=None, e2=None):
-    poly_initial = Polygon(_orienter_polygone_ccw(np.asarray(vertices, float)))
-    res = np.zeros(4) # [N, My, Mz, S]
+def clip_polygon_eps(vertices, eps0, alpha, beta, seuil):
+    """
+    Coupe un polygone par le demi-plan :
+    eps(x,y) >= seuil
+    """
 
-    # 1. Isoler d'abord la zone comprimée générale (ε > 0)
-    zones_comprimees = _couper_poly_par_plan(poly_initial, eps0, alpha, beta, 0.0)
-    
-    for zone_c in zones_comprimees:
-        cx, cy = zone_c.centroid.x, zone_c.centroid.y
-        if eps0 + alpha*cx + beta*cy <= 0:
-            continue # Élimine la partie tendue
-            
-        # Modèle ELS : Intégration directe continue sur toute la zone comprimée
-        if mode == 'ELS':
-            coords = _orienter_polygone_ccw(np.array(zone_c.exterior.coords))
-            for i in range(len(coords) - 1):
-                xa, ya, xb, yb = coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]
-                res[3] += (yb - ya) * (xa + (xb - xa) / 2.0)
-                res[:3] += _contrib_ELS(xa, ya, xb, yb, eps0, alpha, beta, C)
+    def eps(x,y):
+        return eps0 + alpha*x + beta*y
 
-        # Modèle ELU : Séparation stricte des sous-polygones Parabole et Rectangle
-        else:
-            sub_zones = _couper_poly_par_plan(zone_c, eps0, alpha, beta, e2)
-            
-            for sub_z in sub_zones:
-                sz_cx, sz_cy = sub_z.centroid.x, sub_z.centroid.y
-                eps_milieu = eps0 + alpha*sz_cx + beta*sz_cy
-                
-                coords = _orienter_polygone_ccw(np.array(sub_z.exterior.coords))
-                
-                # Identification de la loi par le centre de gravité du sous-polygone
-                if eps_milieu <= e2:
-                    # Sous-polygone ENTIÈREMENT dans la zone Parabole
-                    for i in range(len(coords) - 1):
-                        xa, ya, xb, yb = coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]
-                        res[3] += (yb - ya) * (xa + (xb - xa) / 2.0)
-                        res[:3] += _contrib_ELU_P(xa, ya, xb, yb, eps0, alpha, beta, fcd, e2)
-                else:
-                    # Sous-polygone ENTIÈREMENT dans la zone Rectangle (Plastifié)
-                    for i in range(len(coords) - 1):
-                        xa, ya, xb, yb = coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]
-                        res[3] += (yb - ya) * (xa + (xb - xa) / 2.0)
-                        res[:3] += _contrib_ELU_R(xa, ya, xb, yb, fcd)
-    return res
+    output = []
+    n = len(vertices)
 
+    for i in range(n):
+
+        x1, y1 = vertices[i]
+        x2, y2 = vertices[(i+1) % n]
+
+        e1 = eps(x1, y1)
+        e2 = eps(x2, y2)
+
+        inside1 = (e1 >= seuil)
+        inside2 = (e2 >= seuil)
+
+        if inside1 and inside2:
+            output.append((x2, y2))
+
+        elif inside1 and not inside2:
+            t = (seuil - e1) / (e2 - e1)
+            xi = x1 + t*(x2 - x1)
+            yi = y1 + t*(y2 - y1)
+            output.append((xi, yi))
+
+        elif not inside1 and inside2:
+            t = (seuil - e1) / (e2 - e1)
+            xi = x1 + t*(x2 - x1)
+            yi = y1 + t*(y2 - y1)
+            output.append((xi, yi))
+            output.append((x2, y2))
+
+        # sinon rien
+
+    return np.array(output)
+
+def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fcd=None, e2=None):
+
+    pts = _orienter_polygone_ccw(np.asarray(contour, float))
+
+    # ✅ zone comprimée
+    poly_c = clip_polygon_eps(pts, eps0, alpha, beta, 0.0)
+
+    if len(poly_c) < 3:
+        return np.zeros(4)
+
+    res = np.zeros(4)
+
+    if mode == 'ELS':
+
+        edges = np.column_stack([poly_c, np.roll(poly_c, -1, axis=0)])
+
+        for xa, ya, xb, yb in edges:
+            dx = xb - xa
+            dy = yb - ya
+
+            res[3] += dy * (xa + dx/2)
+            res[:3] += _contrib_ELS(xa, ya, xb, yb, eps0, alpha, beta, C)
+
+        return res
+
+    else:
+        # ✅ zone rectangle
+        poly_r = clip_polygon_eps(poly_c, eps0, alpha, beta, e2)
+
+        # ✅ zone parabole = poly_c - poly_r
+        res_r = np.zeros(4)
+        if len(poly_r) >= 3:
+            edges = np.column_stack([poly_r, np.roll(poly_r, -1, axis=0)])
+            for xa, ya, xb, yb in edges:
+                dx = xb - xa
+                dy = yb - ya
+                res_r[3] += dy * (xa + dx/2)
+                res_r[:3] += _contrib_ELU_R(xa, ya, xb, yb, fcd)
+
+        # ✅ zone parabole (reste)
+        res_p = np.zeros(4)
+        edges = np.column_stack([poly_c, np.roll(poly_c, -1, axis=0)])
+
+        for xa, ya, xb, yb in edges:
+
+            xm = 0.5*(xa+xb)
+            ym = 0.5*(ya+yb)
+            if eps0 + alpha*xm + beta*ym <= e2:
+
+                dx = xb - xa
+                dy = yb - ya
+                res_p[3] += dy * (xa + dx/2)
+                res_p[:3] += _contrib_ELU_P(xa, ya, xb, yb,
+                                            eps0, alpha, beta, fcd, e2)
+
+        return res_p + res_r
 
 # ═══════════════════════════════════════════════════════════════
 # BLOC 3 — FONCTIONS PUBLIQUES
