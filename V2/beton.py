@@ -44,6 +44,33 @@ def eps_n(fck_array):
     
     eps = 2
     return eps	
+
+
+
+@func
+def eps_cu2(fck):
+    """Renvoie la déformation eps_cu2 selon tableau 3.1 de NF EN 1992-1-1, en mm/m"""
+    # arrondi = faux pour avoir la valeur selon la formule
+  
+    if fck <= 50:
+        eps = 3.5
+    else:
+        eps = 2.6 + 35 * ((90 - fck) / 100) ** 4
+
+    return eps
+@func    
+def eps_n(fck_array):
+    """Renvoie le coefficient n selon tableau 3.1 de NF EN 1992-1-1"""
+    # arrondi = faux pour avoir la valeur selon la formule
+  
+    fck = np.asarray(fck_array)
+    
+    # eps = 2 si fck <= 50, sinon formule décroissante selon fck
+    eps = np.where(fck <= 50, 2.0, 1.4 + 23.4 * ((90 - fck) / 100)**4)
+    return eps	
+
+
+
 @func		
 def sigma_c_n(eps_c_array, n_array):
     """
