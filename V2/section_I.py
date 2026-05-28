@@ -48,7 +48,29 @@ Conventions :
 #   │                                     │  hi
 #   └──────────────── bi ─────────────────┘
 
-import numpy as np
+# ════════════════════════════════════════════════════════════════════════════
+# 3. GÉOMÉTRIE — SECTION EN I
+# ════════════════════════════════════════════════════════════════════════════
+#
+#  Paramètres géométriques (tous en mm) :
+#    b, h      : largeur et hauteur totale de la section
+#    bs, hs    : largeur et hauteur de la table supérieure
+#    gs        : congé supérieur (gousset)
+#    bi, hi    : largeur et hauteur de la table inférieure
+#    gi        : congé inférieur (gousset)
+#
+#   ┌──────────────── bs ─────────────────┐
+#   │                                     │  hs
+#   └──────┬─────────────────────┬────────┘
+#          │ gs                  │ gs
+#          │◄── b/2              │
+#          │                     │
+#          │       âme           │
+#          │                     │
+#          │ gi                  │ gi
+#   ┌──────┴─────────────────────┴────────┐
+#   │                                     │  hi
+#   └──────────────── bi ─────────────────┘
 
 # ════════════════════════════════════════════════════════════════════════════
 # 1. GÉOMÉTRIE ET POLYNÔMES (Repère initial et centré)
@@ -134,11 +156,9 @@ def calculer_NM_beton(pts, eps0, beta, mode='ELS', n_els=15.0, fck=30.0, fcd=20.
         C_els = 200000.0 / (float(n_els) * 1000.0)
         e2, expo_elu = 0.0, 2.0
     else:  # mode == 'ELU'
-        if fck <= 50.0:
-            e2, expo_elu = 2.0e-3, 2.0
-        else:
-            e2 = (2.0 + 0.085 * (fck - 50.0)**0.53) * 10e-3
-            expo_elu = 1.4 + 23.4 * ((90.0 - fck) / 100.0)**4
+        e2 = eps_c2(fck)
+        expo_elu = eps_n(fck)
+        
 
     # Quadrature de Gauss-Legendre à 3 points
     gauss_points = np.array([-np.sqrt(3/5), 0.0, np.sqrt(3/5)])
@@ -1110,14 +1130,35 @@ def ELS_I_As_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms
     pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
     Nc, _ = _NM_beton_ELS(pts, n, n * sb / 200.0, 0.0)
     return float((Ns - float(Nc)) / n / sb * 1e4 - Ai_4)
-
-
 # ── Sélection automatique du cas ELS ─────────────────────────────────────
 
-def _section_area(b, h, bs, hs, gs, bi, hi, gi):
-    pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
-    f    = lambda x, y: np.ones_like(x, float)
-    return float(polygone_integrate(f, pts))
+@func
+def section_area(b, h, bs, hs, gs, bi, hi, gi):
+    """
+    Calcule l'aire totale de la section en I avec goussets.
+    Calcul analytique exact (O(1)), sans polygone_integrate ni sommets.
+    """
+    # 1. Aire de la table inférieure (Rectangle)
+    A_table_inf = bi * hi
+    
+    # 2. Aire du gousset inférieur (Trapèze)
+    A_gousset_inf = 0.5 * (bi + b) * gi
+    
+    # 3. Aire de l'âme (Rectangle)
+    # Sa hauteur est la hauteur totale moins les tables et les goussets
+    h_ame = h - hi - gi - hs - gs
+    A_ame = b * h_ame
+    
+    # 4. Aire du gousset supérieur (Trapèze)
+    A_gousset_sup = 0.5 * (b + bs) * gs
+    
+    # 5. Aire de la table supérieure (Rectangle)
+    A_table_sup = bs * hs
+    
+    # Somme de toutes les sous-surfaces
+    aire_totale = A_table_inf + A_gousset_inf + A_ame + A_gousset_sup + A_table_sup
+    
+    return float(aire_totale)
 
 
 @func
@@ -1201,7 +1242,7 @@ def _check_4pct(As, Ai, area):
 def ELS_I_As(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
     As = ELS_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
     Ai = ELS_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
-    msg = _check_4pct(As, Ai, _section_area(b, h, bs, hs, gs, bi, hi, gi))
+    msg = _check_4pct(As, Ai, section_area(b, h, bs, hs, gs, bi, hi, gi))
     if msg:   return msg
     return max(0.0, As)
 
@@ -1210,7 +1251,7 @@ def ELS_I_As(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
 def ELS_I_Ai(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
     As = ELS_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
     Ai = ELS_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
-    msg = _check_4pct(As, Ai, _section_area(b, h, bs, hs, gs, bi, hi, gi))
+    msg = _check_4pct(As, Ai, section_area(b, h, bs, hs, gs, bi, hi, gi))
     if msg:   return msg
     return max(0.0, Ai)
 
@@ -1497,7 +1538,6 @@ def ELU_I_As_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_u
     sig_s = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, float(eps_c2(fck))))
     return float(1e4 / sig_s * (Nu - Nc - (MuA - M2p) / (h - esup - einf)))
 
-
 # ── Sélection automatique du domaine ELU ─────────────────────────────────
 
 @func
@@ -1578,7 +1618,7 @@ def ELU_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps
 def ELU_I_As(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
     As = ELU_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
     Ai = ELU_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
-    msg = _check_4pct(As, Ai, _section_area(b, h, bs, hs, gs, bi, hi, gi))
+    msg = _check_4pct(As, Ai, section_area(b, h, bs, hs, gs, bi, hi, gi))
     if msg:   return msg
     return max(0.0, As)
 
@@ -1587,7 +1627,7 @@ def ELU_I_As(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk,
 def ELU_I_Ai(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
     As = ELU_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
     Ai = ELU_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
-    msg = _check_4pct(As, Ai, _section_area(b, h, bs, hs, gs, bi, hi, gi))
+    msg = _check_4pct(As, Ai, section_area(b, h, bs, hs, gs, bi, hi, gi))
     if msg:   return msg
     return max(0.0, Ai)
 
@@ -1711,3 +1751,8 @@ def plot_triangles(b, h, bs, hs, gs, bi, hi, gi, Asup, Ainf, esup, einf, ratio):
     plt.show()
     
     return fig
+
+
+
+
+
