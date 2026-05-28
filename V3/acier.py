@@ -1,4 +1,3 @@
-
 # Module pour les propriétés et calculs de l'acier
 import datetime as dt
 import numpy as np
