@@ -1,4 +1,3 @@
-
 # beton.py - V2
 #version V2
 import datetime as dt
