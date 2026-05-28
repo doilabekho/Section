@@ -1464,7 +1464,7 @@ def ELU_I_As_21(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_
     MuA1  = ELU_I_MuA1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
     ME    = ELU_I_ME(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
     ecu   = float(eps_cu2(fck))
-    eps_sd = fyd / _ES * 1000.0
+    eps_sd = fyd / 200000 * 1000.0
     bras_x = einf * (1.0 + 200.0 * ecu / fyd) * fyd / 200.0 / ecu / (h - einf)
     sig_s  = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, ecu * (1.0 - bras_x)))
     return float(1e4 * (MuA1 - ME) / (h - esup - einf) / sig_s)
