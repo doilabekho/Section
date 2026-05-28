@@ -566,142 +566,120 @@ def _contrib_ELU_R(x1, y1, x2, y2, fcd):
     return np.array([N_, My_, Mz_])
 
 
-def _contrib_ELU_P(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2):
+def _contrib_ELU_P(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2, n=2.0):
     """
-    Contribution EXACTE ELU zone P (σ=fcd·(2u-u²), u=ε/e2) à [N, My, Mz].
-
-    Q_N = fcd · ∫σ dx = fcd·[2Ax/e2 + Bx²/e2 - A²x/e2² - ABx²/e2² - B²x³/(3e2²)]
-    avec A = ε₀+β·y (dépend de y → de s), B = α.
-
-    Sur l'arête : A(s) = A0 + dA·s, x(s) = x1 + s·Δx
-    A0 = ε₀+β·y1, dA = β·Δy, B = α
-
-    Q_N(s) = fcd·[2·A(s)·x(s)/e2 + B·x(s)²/e2
-                  - A(s)²·x(s)/e2² - A(s)·B·x(s)²/e2² - B²·x(s)³/(3e2²)]
-
-    Chaque terme est un polynôme en s de degré ≤ 3.
-
-    N  = Δy · ∫₀¹ Q_N(s) ds
-    My = Δy · ∫₀¹ Q_My(s) ds  où Q_My=Q_N·y(s)/x(s)... NON
-
-    APPROCHE DIRECTE — intégrale de ligne de σ·dy :
-    ∬σ dA = ∮ Q_N dy  mais aussi (par Green dans l'autre sens) :
-    ∬σ dA = -∮ Q̃_N dx  avec ∂Q̃_N/∂y = σ
-
-    La formule ∮ Q_N dy donne directement N, My, Mz
-    en intégrant Q_N, Q_N·y, Q_N·x sur l'arête.
-
-    Mais Q_My ≠ Q_N·y. On a besoin de Q_My tel que ∂Q_My/∂x = σ·y.
-    σ·y = fcd·(2u-u²)·y
-    Q_My = fcd·∫(2u-u²)·y dx = y·Q_N  (y constant en x ?)
-    NON : y est constant en x le long d'une ligne horizontale,
-    mais sur l'arête y varie avec s.
-
-    FORMULATION CORRECTE pour l'arête :
-    N  = Δy · ∫₀¹ Q_N(x(s), y(s)) ds
-    My = Δy · ∫₀¹ Q_My(x(s), y(s)) ds
-    Mz = Δy · ∫₀¹ Q_Mz(x(s), y(s)) ds
-
-    où Q_My(x,y) est la primitive de σ(x,y)·y par rapport à x (y fixé) :
-    Q_My = fcd·y·∫(2u-u²) dx = y · Q_N_sans_constante
-
-    De même Q_Mz = fcd·∫(2u-u²)·x dx
-
-    Calcul de Q_N avec A=ε₀+βy, B=α :
-    Q_N/fcd = 2Ax/e2 + Bx²/e2 - A²x/e2² - ABx²/e2² - B²x³/(3e2²)
-
-    Q_My/fcd = y · (2Ax/e2 + Bx²/e2 - A²x/e2² - ABx²/e2² - B²x³/(3e2²))
-
-    Q_Mz/fcd = ∫(2u-u²)·x dx
-             = ∫(2(A+Bx)/e2 - (A+Bx)²/e2²)·x dx
-             = 2A·x²/(2e2) + 2B·x³/(3e2) - A²·x²/(2e2²) - 2AB·x³/(3e2²) - B²·x⁴/(4e2²)
-             = A·x²/e2 + 2B·x³/(3e2) - A²·x²/(2e2²) - 2AB·x³/(3e2²) - B²·x⁴/(4e2²)
-
-    En substituant A(s)=A0+dA·s, x(s)=x1+Δx·s, y(s)=y1+Δy·s :
-    tous les termes sont polynômes en s de degré ≤ 4 → intégrables exactement.
+    Contribution EXACTE ELU zone P (σ=fcd·(1 - (1-u)ⁿ), u=ε/e2) à [N, My, Mz].
+    Généralisée pour une puissance n quelconque (ex: n=1.4 pour C70).
+    
+    Principe mathématique :
+    Au lieu de développer le polynôme (impossible si n n'est pas entier),
+    on intègre analytiquement la primitive exacte de la fonction puissance W^n.
+    Pour éviter la division par zéro si alpha=0 ou beta=0, on projette
+    le théorème de Green sur l'axe X ou Y selon le gradient dominant.
     """
-    dx = x2-x1;  dy = y2-y1
-    if abs(dy) < 1e-15:
+    dx = x2 - x1
+    dy = y2 - y1
+    if abs(dx) < 1e-15 and abs(dy) < 1e-15:
         return np.zeros(3)
 
-    A0 = eps0 + beta*y1   # A(s) = A0 + dA·s
-    dA = beta*dy
-    B  = alpha
-    e2sq = e2**2
+    # 1. Calcul des déformations aux nœuds de l'arête
+    eps1 = eps0 + alpha * x1 + beta * y1
+    eps2 = eps0 + alpha * x2 + beta * y2
+    
+    # 2. Variable interne W = 1 - u = 1 - eps / e2
+    # Borne max à 0.0 pour éviter les NaN (numérique) avec des puissances non entières
+    W1 = max(1.0 - eps1 / e2, 0.0)
+    W2 = max(1.0 - eps2 / e2, 0.0)
+    
+    # Fonction d'intégration exacte de W(s)^p * s^k sur le segment paramétrique s ∈ [0, 1]
+    def _I_W(p):
+        dW = W2 - W1
+        
+        # Si dW est très petit, l'intégration analytique produit une instabilité (0/0).
+        # On utilise donc un développement de Taylor sécurisé (Ordre 2).
+        if abs(dW) < 1e-5:
+            # Ordre 0
+            T0 = W1**p
+            
+            # Calcul des termes avec sécurité sur W1 > 0 pour éviter la division par zéro
+            # si l'exposant (p-k) devient négatif.
+            
+            # Ordre 1
+            T1 = p * (W1**(p-1)) * dW if W1 > 0 else 0.0
+            
+            # Ordre 2
+            T2 = (p * (p-1) / 2.0) * (W1**(p-2)) * (dW**2) if W1 > 0 else 0.0
+            
+            # Ordre 3
+            T3 = (p * (p-1) * (p-2) / 6.0) * (W1**(p-3)) * (dW**3) if W1 > 0 else 0.0
+            
+            # Ordre 4
+            T4 = (p * (p-1) * (p-2) * (p-3) / 24.0) * (W1**(p-4)) * (dW**4) if W1 > 0 else 0.0
+            
+            # Intégrale de W(s)^p
+            I0 = T0 + T1/2.0 + T2/3.0 + T3/4.0 + T4/5.0
+            
+            # Intégrale de W(s)^p * s
+            I1 = T0/2.0 + T1/3.0 + T2/4.0 + T3/5.0 + T4/6.0
+            
+            return I0, I1
+        else:
+            # Primitives exactes si dW est suffisant
+            I0 = (W2**(p+1) - W1**(p+1)) / (dW * (p+1))
+            I1 = (W2**(p+2) - W1**(p+2)) / (dW**2 * (p+2)) - (W1 / dW) * I0
+            return I0, I1
 
-    # ── N = Δy · ∫₀¹ Q_N(s) ds ─────────────────────────────────────
-    # Q_N/fcd = 2A·x/e2 + B·x²/e2 - A²·x/e2² - A·B·x²/e2² - B²·x³/(3·e2²)
-    # Termes (degrés en s entre parenthèses) :
-    # T1 = 2·A(s)·x(s)/e2         → degré 2
-    # T2 = B·x²(s)/e2             → degré 2
-    # T3 = -A²(s)·x(s)/e2²        → degré 3
-    # T4 = -A(s)·B·x²(s)/e2²      → degré 3
-    # T5 = -B²·x³(s)/(3·e2²)      → degré 3
+    # 3. Cas particulier : Déformation uniforme sur toute la section (Compression pure)
+    if abs(alpha) < 1e-12 and abs(beta) < 1e-12:
+        sigma = fcd * (1.0 - W1**n)
+        N_  = sigma * dy * (x1 + dx/2.0)
+        My_ = sigma * dy * (x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0)
+        Mz_ = sigma * dy * (x1**2 + x1*dx + dx**2/3.0) / 2.0
+        return np.array([N_, My_, Mz_])
 
-    # ∫₀¹ T1 ds = 2/e2 · ∫A(s)·x(s) ds = 2/e2 · _I(A0,dA, x1,dx, 1,1)
-    # ∫₀¹ T2 ds = B/e2 · ∫x²(s) ds = B/e2 · _I(x1,dx, 1,0, 2,0)
-    # ∫₀¹ T3 ds = -1/e2² · ∫A²(s)·x(s) ds = -1/e2² · _I(A0,dA, x1,dx, 2,1) [attention ordre!]
-    # ∫₀¹ T4 ds = -B/e2² · ∫A(s)·x²(s) ds = -B/e2² · _I(A0,dA, x1,dx, 1,1) * x... NON
-    # Attention : _I(a,da, b,db, p,q) = ∫(a+da·s)^p · (b+db·s)^q ds
-    # T4 = -A(s)·B·x²(s)/e2² → ∫T4 = -B/e2² · _I(A0,dA, x1,dx, 1,2)
-    # T5 = -B²·x³(s)/(3·e2²) → ∫T5 = -B²/(3e2²) · _I(x1,dx, 1,0, 3,0)
+    # 4. Calcul des intégrales paramétriques I(p, k) nécessaires
+    I0_n1, I1_n1 = _I_W(n + 1.0)
+    I0_n2, _     = _I_W(n + 2.0)
 
-    INT_N = (  2.0/e2    * _I(A0, dA, x1, dx, 1, 1)
-             + B/e2      * _I(x1, dx, 1,  0,  2, 0)
-             - 1.0/e2sq  * _I(A0, dA, x1, dx, 2, 1)
-             - B/e2sq    * _I(A0, dA, x1, dx, 1, 2)
-             - B**2/(3.0*e2sq) * _I(x1, dx, 1, 0, 3, 0)
-            )
-    N_ = fcd * dy * INT_N
-
-    # ── My = Δy · ∫₀¹ Q_My(s) ds ────────────────────────────────────
-    # Q_My/fcd = y(s) · (2A·x/e2 + B·x²/e2 - A²·x/e2² - AB·x²/e2² - B²·x³/(3e2²))
-    # = y(s) · Q_N(s)/fcd
-    # Chaque terme est multiplié par y(s) = y1+Δy·s → degré +1
-
-    INT_My = (  2.0/e2    * _I(A0, dA, x1, dx, 1, 1) * 0  # NON — voir ci-dessous
-            )
-    # Correction : les arguments de _I sont (coef_A, coef_s_pour_A, coef_B, coef_s_pour_B, p, q)
-    # mais ici on a 3 facteurs : A(s), x(s), y(s) — il faut développer manuellement.
-    # On utilise la décomposition :
-    # ∫A^p · x^q · y^r ds où A=A0+dA·s, x=x1+dx·s, y=y1+dy·s
-    # = développement trinomial → somme de ∫s^k ds = 1/(k+1)
-
-    def _Iaxyr(pA, px, py):
-        """∫₀¹ A(s)^pA · x(s)^px · y(s)^py ds (développement trinomial)"""
-        from math import comb
-        total = 0.0
-        for iA in range(pA+1):
-            cA = comb(pA, iA) * (A0**(pA-iA)) * (dA**iA)
-            for ix in range(px+1):
-                cx = comb(px, ix) * (x1**(px-ix)) * (dx**ix)
-                for iy in range(py+1):
-                    cy = comb(py, iy) * (y1**(py-iy)) * (dy**iy)
-                    total += cA * cx * cy / (iA+ix+iy+1)
-        return total
-
-    INT_My = (  2.0/e2    * _Iaxyr(1, 1, 1)
-              + B/e2      * _Iaxyr(0, 2, 1)
-              - 1.0/e2sq  * _Iaxyr(2, 1, 1)
-              - B/e2sq    * _Iaxyr(1, 2, 1)
-              - B**2/(3.0*e2sq) * _Iaxyr(0, 3, 1)
-            )
-    My_ = fcd * dy * INT_My
-
-    # ── Mz = Δy · ∫₀¹ Q_Mz(s) ds ────────────────────────────────────
-    # Q_Mz/fcd = A·x²/e2 + 2B·x³/(3e2) - A²·x²/(2e2²) - 2AB·x³/(3e2²) - B²·x⁴/(4e2²)
-
-    INT_Mz = (  1.0/e2      * _Iaxyr(1, 2, 0)
-              + 2.0*B/(3.0*e2)    * _Iaxyr(0, 3, 0)
-              - 1.0/(2.0*e2sq)    * _Iaxyr(2, 2, 0)
-              - 2.0*B/(3.0*e2sq)  * _Iaxyr(1, 3, 0)
-              - B**2/(4.0*e2sq)   * _Iaxyr(0, 4, 0)
-            )
-    Mz_ = fcd * dy * INT_Mz
-
+    # 5. Application Adaptative du Théorème de Green
+    # On choisit d'intégrer selon X ou Y pour ne JAMAIS diviser par un coefficient nul
+    if abs(alpha) >= abs(beta):
+        # --- Gradient dominant en X --- 
+        # Vecteur de Green : Q_N = Int(sigma dx) => Contour sur dy
+        C1 = e2 / (alpha * (n + 1.0))
+        C2 = e2**2 / (alpha**2 * (n + 1.0) * (n + 2.0))
+        
+        # Parties purement géométriques/polynomiales
+        P_N  = x1 + dx/2.0
+        P_My = x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0
+        P_Mz = (x1**2 + x1*dx + dx**2/3.0)/2.0
+        
+        # Assemblage avec les primitives exactes de la courbure
+        N_  = fcd * dy * (P_N + C1 * I0_n1)
+        My_ = fcd * dy * (P_My + C1 * (y1 * I0_n1 + dy * I1_n1))
+        Mz_ = fcd * dy * (P_Mz + C1 * (x1 * I0_n1 + dx * I1_n1) + C2 * I0_n2)
+        
+    else:
+        # --- Gradient dominant en Y --- 
+        # Vecteur de Green : L_N = Int(sigma dy) => Contour sur -dx
+        D1 = e2 / (beta * (n + 1.0))
+        D2 = e2**2 / (beta**2 * (n + 1.0) * (n + 2.0))
+        
+        # Les composantes sont tournées à 90° (symétrie)
+        P_N  = y1 + dy/2.0
+        P_My = (y1**2 + y1*dy + dy**2/3.0)/2.0
+        P_Mz = x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0
+        
+        # Assemblage final
+        N_  = -fcd * dx * (P_N + D1 * I0_n1)
+        My_ = -fcd * dx * (P_My + D1 * (y1 * I0_n1 + dy * I1_n1) + D2 * I0_n2)
+        Mz_ = -fcd * dx * (P_Mz + D1 * (x1 * I0_n1 + dx * I1_n1))
+        
     return np.array([N_, My_, Mz_])
 
-    
+
+
+
 def domaines_comprimes(contour, eps0, alpha, beta):
 
     def eps(x,y):
@@ -860,7 +838,6 @@ def _couper_poly_par_plan(poly, eps0, alpha, beta, valeur_seuil):
 # =============================================================================
 # MOTEUR D'INTÉGRATION PRINCIPAL
 # =============================================================================
-
 def clip_polygon_eps(vertices, eps0, alpha, beta, seuil):
     """
     Coupe un polygone par le demi-plan :
@@ -904,13 +881,13 @@ def clip_polygon_eps(vertices, eps0, alpha, beta, seuil):
 
     return np.array(output)
 
-def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fcd=None, e2=None):
+def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=None, e2=None):
 
     pts = _orienter_polygone_ccw(np.asarray(contour, float))
 
     # ✅ zone comprimée
     poly_c = clip_polygon_eps(pts, eps0, alpha, beta, 0.0)
-
+    
     if len(poly_c) < 3:
         return np.zeros(4)
 
@@ -930,6 +907,7 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fcd=None, e2=No
         return res
 
     else:
+        n= eps_n(fck)
         # ✅ zone rectangle
         poly_r = clip_polygon_eps(poly_c, eps0, alpha, beta, e2)
 
@@ -957,9 +935,12 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fcd=None, e2=No
                 dy = yb - ya
                 res_p[3] += dy * (xa + dx/2)
                 res_p[:3] += _contrib_ELU_P(xa, ya, xb, yb,
-                                            eps0, alpha, beta, fcd, e2)
+                                            eps0, alpha, beta, fcd, e2, n=n)
 
         return res_p + res_r
+
+
+
 
 # ═══════════════════════════════════════════════════════════════
 # BLOC 3 — FONCTIONS PUBLIQUES
@@ -1100,16 +1081,16 @@ def calculer_N_My_Mz_ELU_pararect(
     contour_cg, evidements_cg, Cx, Cy = transformation_repere_cg(polygon1, evi)
     if contour_cg is None:
         return 0.0, 0.0, 0.0
-
+    n = float(eps_n(fck))
     e2 = float(eps_c2(fck))
 
     res_c = _integrer_polygone(contour_cg, eps0, alpha, beta,
-                               'ELU', fcd=fcd, e2=e2)
+                               'ELU',fck=fck, fcd=fcd, e2=e2)
     res_v = np.zeros(4)
     for trou in evidements_cg:
         if len(trou) >= 3:
             res_v += _integrer_polygone(trou, eps0, alpha, beta,
-                                        'ELU', fcd=fcd, e2=e2)
+                                        'ELU',fck=fck, fcd=fcd, e2=e2)
 
     Nc, Mc_y, Mc_z = (res_c - res_v)[:3]
 
