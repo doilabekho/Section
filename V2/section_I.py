@@ -50,127 +50,17 @@ Conventions :
 
 @func
 def trans_i(b, h, bs, hs, gs, bi, hi, gi):
-    """
-    Section en I – contour trigonométrique (CCW)
-    - Faces obliques : subdivisions linéaires (x,y)
-    - Faces horizontales : subdivisions en x
-    - Fonction entièrement autonome
-    """
+    """Retourne les sommets du polygone section I (sens trigonométrique)."""
+    return np.array([
+        [-bi/2, 0],      [-bi/2+bi, 0],
+        [ bi/2, hi],     [ b/2,     hi + gi],
+        [ b/2,  h-hs-gs],[ bs/2,   h - hs],
+        [ bs/2, h],      [-bs/2,   h],
+        [-bs/2, h-hs],   [-b/2,    h-hs-gs],
+        [-b/2,  hi+gi],  [-bi/2,   hi],
+        [-bi/2, 0],
+    ], dtype=float)
 
-    pts = []
-
-    # -------------------------------------------------
-    # Fonctions locales (internes à trans_i)
-    # -------------------------------------------------
-    def subdiv_segment(p0, p1, n):
-        p0 = np.array(p0, float)
-        p1 = np.array(p1, float)
-        t = np.linspace(0.0, 1.0, n+1)
-        return (1 - t[:, None]) * p0 + t[:, None] * p1
-
-    def subdiv_hline(x0, x1, y, n):
-        x = np.linspace(x0, x1, n+1)
-        y = np.full(n+1, y)
-        return np.column_stack((x, y))
-    
-    def n_div(bt, ht):
-        if ht/(bt+1e-15) > 0.05 :
-            return 1
-        if ht/(bt+1e-15) > 0.02 :
-            return 5
-        if ht/(bt+1e-15) < 0.02 :
-            return 10
-
-    ndiv_i = n_div(bi, hi)
-    ndiv_s = n_div(bs, hs)
-    # =================================================
-    # 1. Talon inférieur (horizontal)
-    # (-bi/2,0) → (bi/2,0)
-    # =================================================
-    pts.extend(subdiv_hline(-bi/2, bi/2, 0.0, 2*ndiv_i))
-
-    # =================================================
-    # 2. Face oblique inférieure droite
-    # (bi/2,hi) → (b/2,hi+gi)
-    # =================================================
-    pts.extend(
-        subdiv_segment(
-            [ bi/2, hi ],
-            [ b/2 , hi + gi ],
-            ndiv_i
-        )
-    )
-
-    # =================================================
-    # 3. Âme droite (verticale)
-    # =================================================
-    pts.append([ b/2, h - hs - gs ])
-
-    # =================================================
-    # 4. Face oblique supérieure droite
-    # (b/2,h-hs-gs) → (bs/2,h-hs)
-    # =================================================
-    pts.extend(
-        subdiv_segment(
-            [ b/2 , h - hs - gs ],
-            [ bs/2, h - hs ],
-            ndiv_s
-        )[1:]
-    )
-
-    # =================================================
-    # 5. Coin supérieur droit
-    # =================================================
-    pts.append([ bs/2, h ])
-
-    # =================================================
-    # 6. Table supérieure (horizontal)
-    # (bs/2,h) → (-bs/2,h)
-    # =================================================
-    pts.extend(
-        subdiv_hline(bs/2, -bs/2, h, 2*ndiv_s)[1:]
-    )
-
-    # =================================================
-    # 7. Descente verticale table gauche
-    # =================================================
-    pts.append([ -bs/2, h - hs ])
-
-    # =================================================
-    # 8. Face oblique supérieure gauche
-    # (-bs/2,h-hs) → (-b/2,h-hs-gs)
-    # =================================================
-    pts.extend(
-        subdiv_segment(
-            [ -bs/2, h - hs ],
-            [ -b/2 , h - hs - gs ],
-            ndiv_s
-        )[1:]
-    )
-
-    # =================================================
-    # 9. Âme gauche (verticale)
-    # =================================================
-    pts.append([ -b/2, hi + gi ])
-
-    # =================================================
-    # 10. Face oblique inférieure gauche
-    # (-b/2,hi+gi) → (-bi/2,hi)
-    # =================================================
-    pts.extend(
-        subdiv_segment(
-            [ -b/2 , hi + gi ],
-            [ -bi/2, hi ],
-            ndiv_i
-        )[1:]
-    )
-
-    # =================================================
-    # 11. Fermeture
-    # =================================================
-    pts.append([ -bi/2, 0.0 ])
-
-    return np.array(pts, dtype=float)
 
 
 @func
@@ -199,93 +89,127 @@ def section_I(b, h, bs, hs, gs, bi, hi, gi):
 # 4. INTÉGRATEUR POLYGONAL
 # ════════════════════════════════════════════════════════════════════════════
 
-def _gauss7():
-    """Points et poids de Gauss 7 points sur triangle de référence."""
-    pts = np.array([
-        [1/3, 1/3],
-        [0.1012865073234099, 0.1012865073234099],
-        [0.7974269853530873, 0.1012865073234099],
-        [0.1012865073234099, 0.7974269853530873],
-        [0.4701420641051151, 0.0597158717897698],
-        [0.4701420641051151, 0.4701420641051151],
-        [0.0597158717897698, 0.4701420641051151],
-    ], dtype=float)
-    w = np.array([
-        0.225,
-        0.1259391805448272, 0.1259391805448272, 0.1259391805448272,
-        0.1323941527885062, 0.1323941527885062, 0.1323941527885062,
-    ], dtype=float)
-    return pts.T, w   # shape (2,7) et (7,)
 
 
-@func
-def polygone_integrate(f, vertices, tol=1e-9, rtol=1e-9, max_depth=3):
+def calculer_NM_beton(geom, eps0, beta, mode='ELS', n_els=15.0, fck=None, fcd=None):
     """
-    Intégration adaptative sur polygone (triangulation Delaunay + Gauss 7 pts).
-    f(X, Y) peut retourner un scalaire ou un tableau (ex: [sig, sig*y, sig*x]).
+    Calcule [Nc, Mc_y] pour une section en I avec goussets en une seule passe.
+    Totalement épuré (sans acier, sans Shapely, sans intégration de contour).
+    
+    Parameters:
+    -----------
+    geom  : dict contenant 'h', 'hi', 'gi', 'b', 'gs', 'hs', 'bs'
+    eps0  : déformation à l'origine (y = 0, fibre inférieure)
+    beta  : courbure de la section (gradient de déformation selon y)
+    mode  : 'ELS' ou 'ELU'
+    n_els : coefficient d'équivalence acier-béton (utilisé si mode='ELS')
+    fck   : résistance caractéristique du béton (MPa)
+    fcd   : résistance de calcul du béton (MPa)
+    
+    Returns:
+    --------
+    (Nc, Mc_y) : Effort normal (N) et Moment fléchissant (N.m ou N.mm selon vos unités)
     """
-    if vertices is None or len(vertices) < 3:
-        return 0.0
+    # 1. Extraction et positionnement des 5 couches (Fibre inf à y = 0)
+    h, h_i, g_i, b_i = geom['h'], geom['hi'], geom['gi'], geom['bi']
+    b, g_s, h_s, b_s = geom['b'], geom['gs'], geom['hs'], geom['bs']
+    
+    y0 = 0.0
+    y1 = h_i
+    y2 = h_i + g_i
+    y3 = h - h_s - g_s
+    y4 = h - h_s
+    y5 = h
+    
+    # Définition des couches : (y_start, y_end, largeur_départ, largeur_arrivée)
+    couches = [
+        (y0, y1, b_i, b_i),  # 1. Table inférieure (Rectangle)
+        (y1, y2, b_i, b),    # 2. Gousset inférieur (Trapèze)
+        (y2, y3, b, b),      # 3. Âme (Rectangle)
+        (y3, y4, b, b_s),    # 4. Gousset supérieur (Trapèze)
+        (y4, y5, b_s, b_s)   # 5. Table supérieure (Rectangle)
+    ]
+    
+    # 2. Paramétrage des constantes matériaux et seuils selon le mode
+    if mode == 'ELS':
+        # Calcul du module ou de la rigidité selon votre constante originale :
+        # C = 200000 / (n * 1000)
+        C_els = 200000.0 / (float(n_els) * 1000.0)
+        e2 = 0.0  # Non utilisé en ELS
+        expo_elu = 2.0
+    else:  # mode == 'ELU'
+        # Lois Eurocode 2 pour le diagramme Parabole-Rectangle
+        if fck <= 50.0:
+            e2 = 2.0e-3
+            expo_elu = 2.0
+        else:
+            e2 = (2.0 + 0.085 * (fck - 50.0)**0.53) * 10e-3
+            expo_elu = 1.4 + 23.4 * ((90.0 - fck) / 100.0)**4
 
-    gpts_T, gw = _gauss7()
-
-    # ── Quadrature de Gauss sur un triangle ──────────────────────────────
-    def gauss_tri(v0, v1, v2, area):
-        J0x, J0y = v1[0]-v0[0], v1[1]-v0[1]
-        J1x, J1y = v2[0]-v0[0], v2[1]-v0[1]
-        X = v0[0] + J0x*gpts_T[0] + J1x*gpts_T[1]
-        Y = v0[1] + J0y*gpts_T[0] + J1y*gpts_T[1]
-        vals = np.asarray(f(X, Y))
-        return area * (np.dot(gw, vals.T) if vals.ndim > 1 else np.dot(gw, vals))
-
-    # ── Raffinement adaptatif (pile) ──────────────────────────────────────
-    def integrate_tri(v0, v1, v2, atol):
-        stack = [(v0, v1, v2, atol, 0)]
-        total = None
-        while stack:
-            v0, v1, v2, atol, depth = stack.pop()
-            area = 0.5 * abs((v1[0]-v0[0])*(v2[1]-v0[1])
-                              - (v2[0]-v0[0])*(v1[1]-v0[1]))
-            if area < 1e-15:
-                continue
-            coarse = gauss_tri(v0, v1, v2, area)
-            if total is None:
-                total = np.zeros_like(coarse)
-            if depth >= max_depth:
-                total += coarse
-                continue
-            m01 = 0.5*(v0+v1);  m12 = 0.5*(v1+v2);  m02 = 0.5*(v0+v2)
-            a4  = 0.25 * area
-            g0, g1 = gauss_tri(v0, m01, m02, a4), gauss_tri(v1, m01, m12, a4)
-            g2, g3 = gauss_tri(v2, m12, m02, a4), gauss_tri(m01, m12, m02, a4)
-            fine  = g0 + g1 + g2 + g3
-            err   = np.max(np.abs(fine - coarse))
-            scale = max(float(np.max(np.abs(fine))), 1e-30)
-            if err <= atol and err <= rtol * scale:
-                total += fine
-            else:
-                atol4 = atol * 0.25
-                stack += [(v0, m01, m02, atol4, depth+1),
-                          (v1, m01, m12, atol4, depth+1),
-                          (v2, m12, m02, atol4, depth+1),
-                          (m01, m12, m02, atol4, depth+1)]
-        return total if total is not None else 0.0
-
-    # ── Triangulation Delaunay + filtrage interne ─────────────────────────
-    verts     = np.asarray(vertices, float)
-    tri       = Delaunay(verts)
-    poly_path = Path(verts)
-    total     = None
-
-    for simp in tri.simplices:
-        v0, v1, v2 = verts[simp]
-        if poly_path.contains_point((v0+v1+v2)/3.0):
-            res = integrate_tri(v0, v1, v2, tol)
-            if total is None:
-                total = np.zeros_like(res)
-            total += res
-
-    return total if total is not None else 0.0
+    # Points et poids de la quadrature de Gauss-Legendre à 3 points
+    gauss_points = np.array([-np.sqrt(3/5), 0.0, np.sqrt(3/5)])
+    gauss_weights = np.array([5/9, 8/9, 5/9])
+    
+    Nc = 0.0
+    Mc_y = 0.0
+    
+    # 3. Boucle d'intégration sur les couches géométriques
+    for y_start, y_end, b_start, b_end in couches:
+        if y_start >= y_end:
+            continue
+            
+        # Détermination des points de transition (changement de comportement de la loi)
+        splits = [y_start, y_end]
+        
+        if abs(beta) > 1e-12:
+            # Transition Béton tendu / comprimé (eps = 0)
+            y_zero = -eps0 / beta
+            if y_start < y_zero < y_end:
+                splits.append(y_zero)
+                
+            # Transition Parabole / Rectangle en ELU (eps = e2)
+            if mode == 'ELU':
+                y_e2 = (e2 - eps0) / beta
+                if y_start < y_e2 < y_end:
+                    splits.append(y_e2)
+                    
+        splits = sorted(list(set(splits)))
+        
+        # Intégration sur chaque sous-intervalle régulier
+        for i in range(len(splits) - 1):
+            y_min, y_max = splits[i], splits[i+1]
+            
+            # Changement de variable vers l'espace de Gauss [-1, 1]
+            half_len = (y_max - y_min) / 2.0
+            mean_val = (y_max + y_min) / 2.0
+            
+            for xi, wi in zip(gauss_points, gauss_weights):
+                y_g = half_len * xi + mean_val
+                eps_g = eps0 + beta * y_g
+                
+                # Calcul de la contrainte sigma selon la loi idoine
+                if eps_g <= 0:
+                    sig = 0.0
+                elif mode == 'ELS':
+                    sig = C_els * eps_g
+                else:  # 'ELU'
+                    if eps_g <= e2:
+                        sig = fcd * (1.0 - (1.0 - eps_g / e2)**expo_elu)
+                    else:
+                        sig = fcd
+                
+                # Interpolation linéaire de la largeur du gousset b(y) au point de Gauss
+                t = (y_g - y_start) / (y_end - y_start) if abs(y_end - y_start) > 1e-11 else 0.0
+                b_g = b_start + t * (b_end - b_start)
+                
+                # Calcul du poids élémentaire dA = b(y) * dy
+                facteur_integration = wi * half_len * b_g
+                
+                # Sommation en une seule passe de [sig, sig * y]
+                Nc += sig * facteur_integration
+                Mc_y += sig * y_g * facteur_integration
+                
+    return Nc, Mc_y
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -307,11 +231,8 @@ def _NM_beton_ELS(pts, n, eps0, beta):
     Calcule [Nc, Mc] en UNE seule passe d'intégration (vecteur [sig, sig·y]).
     Évite deux appels séparés à polygone_integrate.
     """
-    def f(x, y):
-        sig = sigma_c_n1(eps0 + beta * y, n)
-        return np.array([sig, sig * y])
-    res = np.asarray(polygone_integrate(f, pts), float).ravel()
-    return (res[0], res[1]) if res.size == 2 else (0.0, 0.0)
+
+    return calculer_NM_beton(pts, eps0, beta, mode='ELS', n_els=n):
 
 
 def _NM_acier_ELS(yG, h, asup, ainf, esup, einf, eps0, beta):
@@ -502,12 +423,8 @@ def e_resultats_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, e
 # ════════════════════════════════════════════════════════════════════════════
 
 def _NM_beton_ELU(pts, fck, fcd, eps0, beta):
-    """Calcule [Nc, Mc] en une passe — ELU parabole-rectangle."""
-    def f(x, y):
-        sig = sigma_c_pararect1(fck, fcd, eps0 + beta * y)
-        return np.array([sig, sig * y])
-    res = np.asarray(polygone_integrate(f, pts), float).ravel()
-    return (res[0], res[1]) if res.size == 2 else (0.0, 0.0)
+
+    return calculer_NM_beton(pts, eps0, beta, mode='ELU', n_els=15.0, fck=fck, fcd=fcd)
 
 
 def _NM_acier_ELU(yG, h, asup, ainf, esup, einf,
