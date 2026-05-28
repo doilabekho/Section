@@ -1,0 +1,1777 @@
+import numpy as np
+import scipy.integrate 
+from scipy.integrate import quad
+from scipy.optimize import root, fsolve, least_squares, root_scalar
+from scipy.spatial import Delaunay
+from matplotlib.path import Path
+from xlwings import func
+
+from beton import *   # ← fonctionne en local et sur GitHub
+from acier import *   # ← fonctionne en local et sur GitHub	
+
+_ES =200000
+"""
+========================================================================
+CALCUL DE SECTIONS EN I — BÉTON ARMÉ (EC2)
+xlwings Lite 
+========================================================================
+Conventions :
+  - Déformations en ‰ (mm/m)
+  - Contraintes en MPa
+  - Aires en mm²  (entrée cm² × 100, sortie cm²)
+  - Es = 200 000 MPa
+  - Axe y = 0 à la fibre inférieure, positif vers le haut
+  - Compression positive en béton EC2
+========================================================================
+"""
+# ════════════════════════════════════════════════════════════════════════════
+# 3. GÉOMÉTRIE — SECTION EN I
+# ════════════════════════════════════════════════════════════════════════════
+#
+#  Paramètres géométriques (tous en mm) :
+#    b, h      : largeur et hauteur totale de la section
+#    bs, hs    : largeur et hauteur de la table supérieure
+#    gs        : congé supérieur (gousset)
+#    bi, hi    : largeur et hauteur de la table inférieure
+#    gi        : congé inférieur (gousset)
+#
+#   ┌──────────────── bs ─────────────────┐
+#   │                                     │  hs
+#   └──────┬─────────────────────┬────────┘
+#          │ gs                  │ gs
+#          │◄── b/2              │
+#          │                     │
+#          │       âme           │
+#          │                     │
+#          │ gi                  │ gi
+#   ┌──────┴─────────────────────┴────────┐
+#   │                                     │  hi
+#   └──────────────── bi ─────────────────┘
+
+@func
+def trans_i(b, h, bs, hs, gs, bi, hi, gi):
+    """
+    Section en I – contour trigonométrique (CCW)
+    - Faces obliques : subdivisions linéaires (x,y)
+    - Faces horizontales : subdivisions en x
+    - Fonction entièrement autonome
+    """
+
+    pts = []
+
+    # -------------------------------------------------
+    # Fonctions locales (internes à trans_i)
+    # -------------------------------------------------
+    def subdiv_segment(p0, p1, n):
+        p0 = np.array(p0, float)
+        p1 = np.array(p1, float)
+        t = np.linspace(0.0, 1.0, n+1)
+        return (1 - t[:, None]) * p0 + t[:, None] * p1
+
+    def subdiv_hline(x0, x1, y, n):
+        x = np.linspace(x0, x1, n+1)
+        y = np.full(n+1, y)
+        return np.column_stack((x, y))
+    
+    def n_div(bt, ht):
+        if ht/(bt+1e-15) > 0.05 :
+            return 1
+        if ht/(bt+1e-15) > 0.02 :
+            return 5
+        if ht/(bt+1e-15) < 0.02 :
+            return 10
+
+    ndiv_i = n_div(bi, hi)
+    ndiv_s = n_div(bs, hs)
+    # =================================================
+    # 1. Talon inférieur (horizontal)
+    # (-bi/2,0) → (bi/2,0)
+    # =================================================
+    pts.extend(subdiv_hline(-bi/2, bi/2, 0.0, 2*ndiv_i))
+
+    # =================================================
+    # 2. Face oblique inférieure droite
+    # (bi/2,hi) → (b/2,hi+gi)
+    # =================================================
+    pts.extend(
+        subdiv_segment(
+            [ bi/2, hi ],
+            [ b/2 , hi + gi ],
+            ndiv_i
+        )
+    )
+
+    # =================================================
+    # 3. Âme droite (verticale)
+    # =================================================
+    pts.append([ b/2, h - hs - gs ])
+
+    # =================================================
+    # 4. Face oblique supérieure droite
+    # (b/2,h-hs-gs) → (bs/2,h-hs)
+    # =================================================
+    pts.extend(
+        subdiv_segment(
+            [ b/2 , h - hs - gs ],
+            [ bs/2, h - hs ],
+            ndiv_s
+        )[1:]
+    )
+
+    # =================================================
+    # 5. Coin supérieur droit
+    # =================================================
+    pts.append([ bs/2, h ])
+
+    # =================================================
+    # 6. Table supérieure (horizontal)
+    # (bs/2,h) → (-bs/2,h)
+    # =================================================
+    pts.extend(
+        subdiv_hline(bs/2, -bs/2, h, 2*ndiv_s)[1:]
+    )
+
+    # =================================================
+    # 7. Descente verticale table gauche
+    # =================================================
+    pts.append([ -bs/2, h - hs ])
+
+    # =================================================
+    # 8. Face oblique supérieure gauche
+    # (-bs/2,h-hs) → (-b/2,h-hs-gs)
+    # =================================================
+    pts.extend(
+        subdiv_segment(
+            [ -bs/2, h - hs ],
+            [ -b/2 , h - hs - gs ],
+            ndiv_s
+        )[1:]
+    )
+
+    # =================================================
+    # 9. Âme gauche (verticale)
+    # =================================================
+    pts.append([ -b/2, hi + gi ])
+
+    # =================================================
+    # 10. Face oblique inférieure gauche
+    # (-b/2,hi+gi) → (-bi/2,hi)
+    # =================================================
+    pts.extend(
+        subdiv_segment(
+            [ -b/2 , hi + gi ],
+            [ -bi/2, hi ],
+            ndiv_i
+        )[1:]
+    )
+
+    # =================================================
+    # 11. Fermeture
+    # =================================================
+    pts.append([ -bi/2, 0.0 ])
+
+    return np.array(pts, dtype=float)
+
+
+@func
+def Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi):
+    """Ordonnée du centre de gravité (fibre inf = 0)."""
+    pts = trans_i(b, h, bs, hs, gs, bi, hi, gi)
+    n   = len(pts) - 1   # dernier point = premier (polygone fermé)
+    x0, y0 = pts[:-1, 0], pts[:-1, 1]
+    x1, y1 = pts[1:,  0], pts[1:,  1]
+    aire_el = x0 * y1 - x1 * y0
+    aire    = 0.5 * aire_el.sum()
+    yG      = (((y0 + y1) * aire_el).sum()) / (6.0 * aire)
+    return float(yG)
+
+
+@func
+def section_I(b, h, bs, hs, gs, bi, hi, gi):
+    """Polygone centré sur le CDG (y_CDG = 0)."""
+    yG   = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+    poly = trans_i(b, h, bs, hs, gs, bi, hi, gi)
+    poly[:, 1] -= yG
+    return poly
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 4. INTÉGRATEUR POLYGONAL
+# ════════════════════════════════════════════════════════════════════════════
+
+def _gauss7():
+    """Points et poids de Gauss 7 points sur triangle de référence."""
+    pts = np.array([
+        [1/3, 1/3],
+        [0.1012865073234099, 0.1012865073234099],
+        [0.7974269853530873, 0.1012865073234099],
+        [0.1012865073234099, 0.7974269853530873],
+        [0.4701420641051151, 0.0597158717897698],
+        [0.4701420641051151, 0.4701420641051151],
+        [0.0597158717897698, 0.4701420641051151],
+    ], dtype=float)
+    w = np.array([
+        0.225,
+        0.1259391805448272, 0.1259391805448272, 0.1259391805448272,
+        0.1323941527885062, 0.1323941527885062, 0.1323941527885062,
+    ], dtype=float)
+    return pts.T, w   # shape (2,7) et (7,)
+
+
+@func
+def polygone_integrate(f, vertices, tol=1e-9, rtol=1e-9, max_depth=3):
+    """
+    Intégration adaptative sur polygone (triangulation Delaunay + Gauss 7 pts).
+    f(X, Y) peut retourner un scalaire ou un tableau (ex: [sig, sig*y, sig*x]).
+    """
+    if vertices is None or len(vertices) < 3:
+        return 0.0
+
+    gpts_T, gw = _gauss7()
+
+    # ── Quadrature de Gauss sur un triangle ──────────────────────────────
+    def gauss_tri(v0, v1, v2, area):
+        J0x, J0y = v1[0]-v0[0], v1[1]-v0[1]
+        J1x, J1y = v2[0]-v0[0], v2[1]-v0[1]
+        X = v0[0] + J0x*gpts_T[0] + J1x*gpts_T[1]
+        Y = v0[1] + J0y*gpts_T[0] + J1y*gpts_T[1]
+        vals = np.asarray(f(X, Y))
+        return area * (np.dot(gw, vals.T) if vals.ndim > 1 else np.dot(gw, vals))
+
+    # ── Raffinement adaptatif (pile) ──────────────────────────────────────
+    def integrate_tri(v0, v1, v2, atol):
+        stack = [(v0, v1, v2, atol, 0)]
+        total = None
+        while stack:
+            v0, v1, v2, atol, depth = stack.pop()
+            area = 0.5 * abs((v1[0]-v0[0])*(v2[1]-v0[1])
+                              - (v2[0]-v0[0])*(v1[1]-v0[1]))
+            if area < 1e-15:
+                continue
+            coarse = gauss_tri(v0, v1, v2, area)
+            if total is None:
+                total = np.zeros_like(coarse)
+            if depth >= max_depth:
+                total += coarse
+                continue
+            m01 = 0.5*(v0+v1);  m12 = 0.5*(v1+v2);  m02 = 0.5*(v0+v2)
+            a4  = 0.25 * area
+            g0, g1 = gauss_tri(v0, m01, m02, a4), gauss_tri(v1, m01, m12, a4)
+            g2, g3 = gauss_tri(v2, m12, m02, a4), gauss_tri(m01, m12, m02, a4)
+            fine  = g0 + g1 + g2 + g3
+            err   = np.max(np.abs(fine - coarse))
+            scale = max(float(np.max(np.abs(fine))), 1e-30)
+            if err <= atol and err <= rtol * scale:
+                total += fine
+            else:
+                atol4 = atol * 0.25
+                stack += [(v0, m01, m02, atol4, depth+1),
+                          (v1, m01, m12, atol4, depth+1),
+                          (v2, m12, m02, atol4, depth+1),
+                          (m01, m12, m02, atol4, depth+1)]
+        return total if total is not None else 0.0
+
+    # ── Triangulation Delaunay + filtrage interne ─────────────────────────
+    verts     = np.asarray(vertices, float)
+    tri       = Delaunay(verts)
+    poly_path = Path(verts)
+    total     = None
+
+    for simp in tri.simplices:
+        v0, v1, v2 = verts[simp]
+        if poly_path.contains_point((v0+v1+v2)/3.0):
+            res = integrate_tri(v0, v1, v2, tol)
+            if total is None:
+                total = np.zeros_like(res)
+            total += res
+
+    return total if total is not None else 0.0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 5. EFFORTS INTERNES — ELS  (loi linéaire, béton fissuré)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _pts_I(b, h, bs, hs, gs, bi, hi, gi):
+    """Raccourci : polygone centré."""
+    return section_I(b, h, bs, hs, gs, bi, hi, gi)
+
+
+def _yG(b, h, bs, hs, gs, bi, hi, gi):
+    """Raccourci : ordonnée du CDG."""
+    return Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+
+
+def _NM_beton_ELS(pts, n, eps0, beta):
+    """
+    Calcule [Nc, Mc] en UNE seule passe d'intégration (vecteur [sig, sig·y]).
+    Évite deux appels séparés à polygone_integrate.
+    """
+    def f(x, y):
+        sig = sigma_c_n1(eps0 + beta * y, n)
+        return np.array([sig, sig * y])
+    res = np.asarray(polygone_integrate(f, pts), float).ravel()
+    return (res[0], res[1]) if res.size == 2 else (0.0, 0.0)
+
+
+def _NM_acier_ELS(yG, h, asup, ainf, esup, einf, eps0, beta):
+    """Efforts acier — ELS loi linéaire."""
+    ys_sup =  h - yG - esup   # ordonnée acier sup / CDG
+    ys_inf = -yG      + einf  # ordonnée acier inf / CDG
+    sig_sup = sigma_s_lin(eps0 + beta * ys_sup)
+    sig_inf = sigma_s_lin(eps0 + beta * ys_inf)
+    Ns  = sig_sup * asup * 1e-4 + sig_inf * ainf * 1e-4
+    Ms  = sig_sup * asup * 1e-4 * ys_sup + sig_inf * ainf * 1e-4 * ys_inf
+    return Ns, Ms
+
+
+@func
+def S_com(b, h, bs, hs, gs, bi, hi, gi, eps0, beta):
+    """Surface comprimée (zone où ε > 0)."""
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    def f(x, y):
+        eps = eps0 + beta * y
+        return (eps + np.abs(eps)) / (2.0 * np.abs(eps) + 1e-15)
+    return float(polygone_integrate(f, pts))
+
+
+@func
+def Nc_I_ELS(b, h, bs, hs, gs, bi, hi, gi, n, eps0, beta):
+    """Effort normal béton — ELS."""
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    Nc, _ = _NM_beton_ELS(pts, n, eps0, beta)
+    return float(Nc)
+
+
+@func
+def Mc_I_ELS(b, h, bs, hs, gs, bi, hi, gi, n, eps0, beta):
+    """Moment béton / CDG — ELS."""
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    _, Mc = _NM_beton_ELS(pts, n, eps0, beta)
+    return float(Mc)
+
+
+@func
+def Ns_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
+    """Effort normal acier — ELS."""
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    Ns, _    = _NM_acier_ELS(yG, h, asup, ainf, esup, einf, eps0, beta)
+    return float(Ns)
+
+
+@func
+def Ms_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
+    """Moment acier / CDG — ELS."""
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    _, Ms    = _NM_acier_ELS(yG, h, asup, ainf, esup, einf, eps0, beta)
+    return float(Ms)
+
+
+@func
+def N_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
+    """Effort normal total — ELS."""
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    Nc, _    = _NM_beton_ELS(pts, n, eps0, beta)
+    Ns, _    = _NM_acier_ELS(yG, h, asup, ainf, esup, einf, eps0, beta)
+    return float(Nc + Ns)
+
+
+@func
+def M_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
+    """Moment total / CDG — ELS."""
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    _, Mc    = _NM_beton_ELS(pts, n, eps0, beta)
+    _, Ms    = _NM_acier_ELS(yG, h, asup, ainf, esup, einf, eps0, beta)
+    return float(Mc + Ms)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 6. SOLVEUR ELS — (N, M) → (ε₀, β)
+# ════════════════════════════════════════════════════════════════════════════
+
+@func
+def calculer_N_M(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
+    points = section_I(b, h, bs, hs, gs, bi, hi, gi)
+    
+    def f_complet( x,y):
+        eps = eps0  + beta * y
+        sig = sigma_c_n(eps, n)
+        return np.array([sig, sig * y])
+
+    # Calcul béton (Plein)
+    Nc, Mc = polygone_integrate(f_complet, points)
+    
+    # Calculs pour l'acier
+    yc = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+    Nssup = sigma_s_lin(eps0 + (h - yc - esup) * beta) * asup * 0.0001
+    Nsinf = sigma_s_lin(eps0 + (-yc + einf) * beta) * ainf * 0.0001    
+    Mssup = Nssup * (h - yc - esup)
+    Msinf = Nsinf * (-yc + einf)
+
+    # Somme des contributions béton et acier
+    N = Nssup + Nsinf + Nc
+    M = Mssup + Msinf + Mc
+    return N, M
+@func
+def solve_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, Nobj, Mobj):
+    x0 = np.array([0., 0.001])  # Valeurs initiales [eps0, beta]
+
+    def residuals(eps):
+        N, M = calculer_N_M(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, *eps)
+        return np.array([N - Nobj, M - Mobj])
+
+    #result = fsolve(residuals, x0)
+    #return result
+    def jacobian(eps, h=1e-6):
+        """Jacobien par différences finies centrées (3×3)."""
+        J = np.empty((2, 2))
+        r0 = residuals(eps)
+        for i in range(2):
+            dh = np.zeros(2); dh[i] = h
+            J[:, i] = (residuals(eps + dh) - r0) / h
+        return J
+
+    result = root(
+        residuals,
+        x0,
+        jac=jacobian,
+        method= "hybr", #"hybr",  # ou "lm"
+        tol=1e-5,
+        options={"maxfev": 200}
+        )
+    return result.x
+
+# ════════════════════════════════════════════════════════════════════════════
+# 7. Résultats ELS — Calculs contrainte
+# ════════════════════════════════════════════════════════════════════════════    
+@func
+def resultats_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
+    yc = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+    epscsup = eps0 + (h - yc) * beta
+    epscinf = eps0 - yc * beta
+    epsssup = eps0 + (h - yc - esup) * beta
+    epssinf = eps0 - (yc - einf) * beta
+    sigmacsup = sigma_c_n(epscsup, n)
+    sigmacinf = sigma_c_n(epscinf, n)
+    sigmassup = sigma_s_lin(epsssup)
+    sigmasinf = sigma_s_lin(epssinf)
+
+    N, M = calculer_N_M(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
+    # Calcul de la hauteur comprimée
+   
+    ycomp = lambda y: np.where((eps0 + beta * y) > 0, 1.0, 0.0)
+    hcomp = quad(ycomp, -yc, h - yc)[0]
+
+    if hcomp == h:
+        etat = "entièrement comprimé"
+    elif hcomp > 0:
+        etat = "partiellement tendu"
+    else:
+        etat = "entièrement tendu"
+
+    res = {
+        "EPS0": eps0,
+        "BETA": beta,
+        "H_compr": hcomp,
+        "Etat": etat,
+        "EPS_C_SUP": epscsup,
+        "EPS_S_SUP": epsssup,
+        "EPS_S_INF": epssinf,
+        "EPS_C_INF": epscinf,
+        "SIG_C_SUP": sigmacsup,
+        "SIG_S_SUP": sigmassup,
+        "SIG_S_INF": sigmasinf,
+        "SIG_C_INF": sigmacinf,
+        "N": N,
+        "M": M
+    }
+    return res
+@func
+def e_resultats_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta,resultats):
+    resultats_Excel = []
+    resultats_tout = resultats_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)                    
+    resultats_list = resultats.split(',')
+    for r in resultats_list:       
+        resultats_Excel.append(resultats_tout[r])
+    return resultats_Excel   # résultats en ligne
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8. EFFORTS INTERNES — ELU  (loi parabole-rectangle)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _NM_beton_ELU(pts, fck, fcd, eps0, beta):
+    """Calcule [Nc, Mc] en une passe — ELU parabole-rectangle."""
+    def f(x, y):
+        sig = sigma_c_pararect1(fck, fcd, eps0 + beta * y)
+        return np.array([sig, sig * y])
+    res = np.asarray(polygone_integrate(f, pts), float).ravel()
+    return (res[0], res[1]) if res.size == 2 else (0.0, 0.0)
+
+
+def _NM_acier_ELU(yG, h, asup, ainf, esup, einf,
+                  fyd, k, eps_uk, eps_ud, eps0, beta):
+    """Efforts acier — ELU loi palier."""
+    ys_sup =  h - yG - esup
+    ys_inf = -yG      + einf
+    sig_sup = sigma_s_palier(fyd, k, eps_uk, eps_ud, eps0 + beta * ys_sup)
+    sig_inf = sigma_s_palier(fyd, k, eps_uk, eps_ud, eps0 + beta * ys_inf)
+    Ns  = sig_sup * asup * 1e-4 + sig_inf * ainf * 1e-4
+    Ms  = sig_sup * asup * 1e-4 * ys_sup + sig_inf * ainf * 1e-4 * ys_inf
+    return float(Ns), float(Ms)
+
+
+@func
+def Nc_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi, fck, fcd, eps0, beta):
+    """Effort normal béton — ELU."""
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    Nc, _ = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    return float(Nc)
+
+
+@func
+def Mc_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi, fck, fcd, eps0, beta):
+    """Moment béton / CDG — ELU."""
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    _, Mc = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    return float(Mc)
+
+
+@func
+def Ns_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi,
+                       asup, ainf, esup, einf,
+                       fyd, k, eps_uk, eps_ud, eps0, beta):
+    """Effort normal acier — ELU."""
+    yG    = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    Ns, _ = _NM_acier_ELU(yG, h, asup, ainf, esup, einf,
+                           fyd, k, eps_uk, eps_ud, eps0, beta)
+    return Ns
+
+
+@func
+def Ms_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi,
+                       asup, ainf, esup, einf,
+                       fyd, k, eps_uk, eps_ud, eps0, beta):
+    """Moment acier / CDG — ELU."""
+    yG    = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    _, Ms = _NM_acier_ELU(yG, h, asup, ainf, esup, einf,
+                           fyd, k, eps_uk, eps_ud, eps0, beta)
+    return Ms
+
+
+@func
+def N_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi,
+                      asup, ainf, esup, einf,
+                      fck, fcd, fyd, k, eps_uk, eps_ud, eps0, beta):
+    """Effort normal total — ELU."""
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    Nc, _    = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    Ns, _    = _NM_acier_ELU(yG, h, asup, ainf, esup, einf,
+                              fyd, k, eps_uk, eps_ud, eps0, beta)
+    return float(Nc + Ns)
+
+
+@func
+def M_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi,
+                      asup, ainf, esup, einf,
+                      fck, fcd, fyd, k, eps_uk, eps_ud, eps0, beta):
+    """Moment total / CDG — ELU."""
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    _, Mc    = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    _, Ms    = _NM_acier_ELU(yG, h, asup, ainf, esup, einf,
+                              fyd, k, eps_uk, eps_ud, eps0, beta)
+    return float(Mc + Ms)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 9. SOLVEUR ELU — (N, M) → (ε₀, β)
+# ════════════════════════════════════════════════════════════════════════════
+
+@func
+def calculer_N_M_ELU(b,h,bs,hs,gs,bi,hi,gi,asup,ainf,esup,einf, fck,fcd,fyd,k,eps_uk,eps_ud,eps0,beta):
+    # Calcul pour la partie béton (Ic et Iv pour les trois valeurs N, My, Mz)
+    points = section_I(b,h,bs,hs,gs,bi,hi,gi)
+    def f_ELU_complet(x,y):
+        eps = eps0  + beta * y
+        # On utilise la loi parabole-rectangle optimisée
+        sig = sigma_c_pararect1(fck, fcd, eps)
+        return np.array([sig, sig * y])
+
+    # Calcul béton plein
+    N, M = polygone_integrate(f_ELU_complet, points)
+     
+    # Calcul pour la partie acier
+    
+        # Calculs pour l'acier
+    yc = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+    Nssup = sigma_s_palier(fyd,k,eps_uk,eps_ud,eps0+(h-yc-esup)*beta)*asup*0.0001
+    Nsinf = sigma_s_palier(fyd,k,eps_uk,eps_ud,eps0+(-yc+einf)*beta)*ainf*0.0001
+    Mssup = Nssup * (h - yc - esup)
+    Msinf = Nsinf * (-yc + einf)
+
+    # Somme des contributions béton et acier
+    N = Nssup + Nsinf + N
+    M = Mssup + Msinf + M
+    
+    
+    return N, M
+
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# HELPERS INTERNES
+# ════════════════════════════════════════════════════════════════════════════
+
+def _residuals_ELU(ep, b, h, bs, hs, gs, bi, hi, gi,
+                   asup, ainf, esup, einf,
+                   fck, fcd, fyd, k, eps_uk, eps_ud,
+                   Nobj, Mobj):
+    """Résidu [N−Nobj, M−Mobj] pour un vecteur ep = [ε₀, β]."""
+    N, M = calculer_N_M_ELU(
+        b, h, bs, hs, gs, bi, hi, gi,
+        asup, ainf, esup, einf,
+        fck, fcd, fyd, k, eps_uk, eps_ud,
+        ep[0], ep[1]
+    )
+    return np.array([N - Nobj, M - Mobj])
+
+
+def _jacobian_centre(ep, resid_fn, h_fd=1e-6):
+    """
+    Jacobien 2×2 par différences finies CENTRÉES O(h²).
+    Plus précis que l'unilatéral → meilleure convergence près des kinks.
+    """
+    J = np.empty((2, 2))
+    for i in range(2):
+        dh      = np.zeros(2); dh[i] = h_fd
+        J[:, i] = (resid_fn(ep + dh) - resid_fn(ep - dh)) / (2.0 * h_fd)
+    return J
+
+
+def _grille_x0(Nobj, Mobj, h):
+    """
+    Génère 8 points de départ couvrant les domaines physiques EC2 :
+      ε₀ ∈ [−3.5, +3.5] ‰  (traction pure → compression pure)
+      β  ∈ [−7/h,  +7/h]   (gradient de déformation sur la hauteur)
+    """
+    eps0_vals = [-2.0, 0.0, 1.0, 2.5]
+    beta_vals = [-3.5/h, 0.0, 3.5/h]
+    # Point centré sur la sollicitation
+    beta_est  = 3.5 / h if Mobj > 0 else -3.5 / h
+    eps0_est  = 0.5
+    points = [(eps0_est, beta_est)]
+    for e in eps0_vals:
+        for b_ in beta_vals:
+            points.append((e, b_))
+    return [np.array([e, b_]) for e, b_ in points]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÉTHODE 1 : root / hybr  (Powell — rapide si régulier)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _solve_hybr(resid_fn, x0):
+    """root/hybr avec jacobien centré."""
+    try:
+        sol = root(
+            resid_fn, x0,
+            jac=lambda ep: _jacobian_centre(ep, resid_fn),
+            method="hybr",
+            tol=1e-6,
+            options={"maxfev": 600}
+        )
+        if sol.success and np.max(np.abs(sol.fun)) < 1e-3:
+            return sol.x
+    except Exception:
+        pass
+    return None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÉTHODE 2 : least_squares / trf  (trust-region — robuste aux kinks)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _solve_trf(resid_fn, x0):
+    """least_squares/trf — tolère les discontinuités de dérivée."""
+    try:
+        sol = least_squares(
+            resid_fn, x0,
+            jac=lambda ep: _jacobian_centre(ep, resid_fn),
+            method='trf',
+            xtol=1e-6, ftol=1e-6, gtol=1e-6,
+            max_nfev=400
+        )
+        #if np.max(np.abs(sol.fun)) < 1e-3:
+        #    return sol.x
+    except Exception:
+        pass
+    return None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÉTHODE 3 : Multi-start  (8 points de départ → hybr puis trf)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _solve_multistart(resid_fn, Nobj, Mobj, h):
+    """
+    Essaie plusieurs points de départ couvrant tout le domaine EC2.
+    Pour chaque point : hybr d'abord, puis trf si échec.
+    Retourne la meilleure solution (résidu minimal).
+    """
+    best_x   = None
+    best_err = np.inf
+
+    for x0 in _grille_x0(Nobj, Mobj, h):
+        # essai hybr
+        x = _solve_hybr(resid_fn, x0)
+        if x is None:
+            x = _solve_trf(resid_fn, x0)
+        if x is not None:
+            err = float(np.max(np.abs(resid_fn(x))))
+            if err < best_err:
+                best_err = err
+                best_x   = x
+
+    if best_err < 1e-2:
+        return best_x
+    return None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MÉTHODE 4 : Bissection 1D  (filet de sécurité ultime)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _solve_bissection(resid_fn, Nobj, Mobj, h):
+    """
+    Approche séquentielle si toutes les méthodes 2D ont échoué.
+
+    Étape A — trouver β tel que l'équilibre en M est satisfait à ε₀ fixé.
+    Étape B — ajuster ε₀ pour l'équilibre en N.
+
+    Hypothèse : β = (ε_cu2 − ε_inf) / h  est monotone en ε₀.
+    Fonctionne sur la quasi-totalité des cas EC2 physiquement admissibles.
+    """
+    from scipy.optimize import brentq as _brentq
+
+    eps_cu2_val = 3.5    # valeur typique C20/C50
+
+    # ── Étape A : chercher β pour un ε₀ donné ────────────────────────────
+    def beta_from_eps0(eps0):
+        """β tel que le moment calculé = Mobj (à ε₀ fixé)."""
+        def fM(beta):
+            r = resid_fn(np.array([eps0, beta]))
+            return float(r[1])   # M − Mobj
+        try:
+            return _brentq(fM, -eps_cu2_val / h, eps_cu2_val / h,
+                           xtol=1e-8, maxiter=100)
+        except ValueError:
+            return None
+
+    # ── Étape B : chercher ε₀ tel que l'effort N est satisfait ───────────
+    def fN(eps0):
+        beta = beta_from_eps0(eps0)
+        if beta is None:
+            return np.nan
+        r = resid_fn(np.array([eps0, beta]))
+        return float(r[0])   # N − Nobj
+
+    # Balayage pour trouver un encadrement de ε₀
+    eps0_grid = np.linspace(-3.5, 3.5, 30)
+    fN_vals   = [fN(e) for e in eps0_grid]
+
+    # Chercher un changement de signe
+    for i in range(len(fN_vals) - 1):
+        f1, f2 = fN_vals[i], fN_vals[i+1]
+        if np.isnan(f1) or np.isnan(f2):
+            continue
+        if f1 * f2 < 0:
+            try:
+                eps0_sol = _brentq(fN, eps0_grid[i], eps0_grid[i+1],
+                                   xtol=1e-7, maxiter=80)
+                beta_sol = beta_from_eps0(eps0_sol)
+                if beta_sol is not None:
+                    x = np.array([eps0_sol, beta_sol])
+                    if np.max(np.abs(resid_fn(x))) < 1e-2:
+                        return x
+            except Exception:
+                continue
+
+    return None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SOLVEUR PRINCIPAL — Cascade des 4 méthodes
+# ════════════════════════════════════════════════════════════════════════════
+
+@func
+def solve_I_ELU_pararect(
+    b, h, bs, hs, gs, bi, hi, gi,
+    asup, ainf, esup, einf,
+    fck, fcd, fyd, k, eps_uk, eps_ud,
+    Nobj, Mobj
+):
+    """
+    Résout (N = Nobj, M = Mobj) → (ε₀, β) — ELU parabole-rectangle.
+
+    Cascade de robustesse :
+      1. root/hybr          (le plus rapide)
+      2. least_squares/trf  (robuste aux kinks β/ε₀)
+      3. Multi-start        (8 points de départ différents)
+      4. Bissection 1D      (filet de sécurité ultime)
+
+    Retourne [ε₀, β] ou [nan, nan] si aucune méthode ne converge.
+    """
+
+    # Fermeture sur les paramètres de la section
+    def resid(ep):
+        return _residuals_ELU(
+            ep, b, h, bs, hs, gs, bi, hi, gi,
+            asup, ainf, esup, einf,
+            fck, fcd, fyd, k, eps_uk, eps_ud,
+            Nobj, Mobj
+        )
+
+    x0 = np.array([0.01, 0.1])   # point de départ par défaut
+
+    # ── Méthode 1 : hybr ─────────────────────────────────────────────────
+    x = _solve_hybr(resid, x0)
+    if x is not None:
+        return x
+
+    # ── Méthode 2 : trf ──────────────────────────────────────────────────
+    x = _solve_trf(resid, x0)
+    if x is not None:
+        return x
+
+    # ── Méthode 3 : multi-start ───────────────────────────────────────────
+    x = _solve_multistart(resid, Nobj, Mobj, h)
+    if x is not None:
+        return x
+
+    # ── Méthode 4 : bissection 1D ─────────────────────────────────────────
+    x = _solve_bissection(resid, Nobj, Mobj, h)
+    if x is not None:
+        return x
+
+    # Aucune convergence
+    return np.array([np.nan, np.nan])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 10. Résultats ELU — Calculs contrainte
+# ════════════════════════════════════════════════════════════════════════════   
+@func
+def resultats_I_ELU_pararect(b,h,bs,hs,gs,bi,hi,gi,asup,ainf,esup,einf, fck,fcd,fyd,k,eps_uk,eps_ud,eps0,beta):
+    # Résultats de calcul sur une section soumise à un champ de déformation eps = eps0+beta.y
+    epscsup = eps0+(h-Nc_Gy_ELS(b, h, bs, hs,gs,bi,hi,gi))*beta
+    epscinf = eps0-Nc_Gy_ELS(b, h, bs, hs,gs,bi,hi,gi)*beta
+    epsssup = eps0+(h-Nc_Gy_ELS(b, h, bs, hs,gs,bi,hi,gi)-esup)*beta
+    epssinf = eps0-(Nc_Gy_ELS(b, h, bs, hs,gs,bi,hi,gi)-einf)*beta
+    sigmacsup = float(sigma_c_pararect1(float(fck), float(fcd), epscsup))
+    sigmacinf = float(sigma_c_pararect1(float(fck), float(fcd), epscinf))
+
+    sigmassup = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, epsssup))
+    sigmasinf = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, epssinf))
+
+    N, M =calculer_N_M_ELU(b,h,bs,hs,gs,bi,hi,gi,asup,ainf,esup,einf, fck,fcd,fyd,k,eps_uk,eps_ud,eps0,beta)
+
+    ycomp = lambda y: np.where((eps0 + beta * y) > 0, 1.0, 0.0)
+    hcomp = scipy.integrate.quad(ycomp, -Nc_Gy_ELS(b, h, bs, hs,gs,bi,hi,gi), h-Nc_Gy_ELS(b, h, bs, hs,gs,bi,hi,gi))[0]
+
+    if hcomp==h:
+        etat="entierement comprimé"
+    elif hcomp>0:
+        etat="partiellement tendu"
+    else:
+        etat="entierement tendu"
+
+    res = {}
+    res["EPS0"]=eps0
+    res["BETA"]=beta
+    res["H_compr"]=hcomp
+    res["Etat"]= etat
+    res["EPS_C_SUP"]=epscsup
+    res["EPS_C_INF"]=epscinf
+    res["EPS_S_SUP"]=epsssup
+    res["EPS_S_INF"]=epssinf
+    res["SIG_C_SUP"]=sigmacsup
+    res["SIG_C_INF"]=sigmacinf
+    res["SIG_S_SUP"]=sigmassup
+    res["SIG_S_INF"]=sigmasinf
+    res["N"]=N
+    res["M"]=M
+
+    return res
+
+@func
+def e_resultats_I_ELU_pararect(b,h,bs,hs,gs,bi,hi,gi,asup,ainf,esup,einf, fck,fcd,fyd,k,eps_uk,eps_ud,eps0,beta,resultats):
+    resultats_Excel = []
+    resultats_tout = resultats_I_ELU_pararect(b,h,bs,hs,gs,bi,hi,gi,asup,ainf,esup,einf, fck,fcd,fyd,k,eps_uk,eps_ud,eps0,beta)                     
+    resultats_list = resultats.split(',')
+    for r in resultats_list:       
+        resultats_Excel.append(resultats_tout[r])
+    return resultats_Excel   # résultats en ligne
+# ════════════════════════════════════════════════════════════════════════════
+# 11. MOMENTS DE RÉFÉRENCE ELS
+# ════════════════════════════════════════════════════════════════════════════
+
+def _eps_beta_AB_ELS(yG, h, einf, n, sb, syt):
+    """Plan de déformation pivotant sur fibre tendue + acier inf à syt."""
+    beta = (n * sb / 200.0 - syt / 200.0) / (h - einf)
+    eps0 = syt / 200.0 + (yG - einf) * beta
+    return eps0, beta
+
+
+@func
+def ELS_I_MserA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Moment de service par rapport à l'acier inf."""
+    yG = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    return Ms + Ns * (yG - einf)
+
+
+@func
+def ELS_I_MserB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Moment de service par rapport à l'acier sup."""
+    yG = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    return -Ms + Ns * (h - yG - esup)
+
+
+@func
+def ELS_I_MAB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Moment de référence MAB (pivot acier inf = syt)."""
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    eps0, bt = _eps_beta_AB_ELS(yG, h, einf, n, sb, syt)
+    Nc, Mc   = _NM_beton_ELS(pts, n, eps0, bt)
+    return float(Mc + Nc * (yG - einf))
+
+@func
+def ELS_I_NAB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Moment de référence MAB (pivot acier inf = syt)."""
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    eps0, bt = _eps_beta_AB_ELS(yG, h, einf, n, sb, syt)
+    Nc, _  = _NM_beton_ELS(pts, n, eps0, bt)
+    return float(Nc) 
+
+
+
+@func
+def ELS_I_MAB_p(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Moment de référence MAB' (par rapport à acier sup)."""
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    eps0, bt = _eps_beta_AB_ELS(yG, h, einf, n, sb, syt)
+    Nc, Mc   = _NM_beton_ELS(pts, n, eps0, bt)
+    return float(Nc * (-Mc / Nc + h - yG - esup))
+
+
+@func
+def ELS_I_MBO(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Moment de référence MBO (pivot fibre inf = 0)."""
+    yG     = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts    = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    beta   = n * sb / 200.0 / h
+    eps0   = yG * beta
+    Nc, Mc = _NM_beton_ELS(pts, n, eps0, beta)
+    return float(Nc * (-Mc / Nc + h - yG - esup))
+
+
+@func
+def ELS_I_MBMAX(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Moment de référence MBMAX (section entièrement comprimée)."""
+    yG     = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts    = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    Nc, Mc = _NM_beton_ELS(pts, n, n * sb / 200.0, 0.0)
+    return float(Nc * (-Mc / Nc + h - yG - esup))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 12. CALCUL DES ARMATURES ELS — MÉTHODE DES CAS
+# ════════════════════════════════════════════════════════════════════════════
+
+def _brentq(f, a, b, tol=1e-12):
+    """Encapsule root_scalar Brent — retourne sol.root ou valeur de repli b."""
+    try:
+        return root_scalar(f, bracket=[a, b], method='brentq', xtol=tol).root
+    except ValueError:
+        return b
+
+
+@func
+def ELS_I_As_t(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Cas 0 — section entièrement tendue : Asup."""
+    MserA = ELS_I_MserA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return abs(MserA) / (h - esup - einf) / (-syt) * 1e4
+
+
+@func
+def ELS_I_Ai_t(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Cas 0 — section entièrement tendue : Ainf."""
+    MserA = ELS_I_MserA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return Ns / syt * 1e4 - abs(MserA) / (h - esup - einf) / (-syt) * 1e4
+
+
+# ── Cas 1 : Asup = 0 ─────────────────────────────────────────────────────
+
+@func
+def solve_I_ELS_c1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Résout y (profondeur relative) pour le cas 1."""
+    MserA = ELS_I_MserA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    pts   = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+
+    def f(y):
+        y     = np.clip(y, 1e-6, 1.0 - 1e-6)
+        sig_b = syt / n * (1.0 - 1.0 / y)
+        eps0_, bt_ = _eps_beta_AB_ELS(
+            _yG(b, h, bs, hs, gs, bi, hi, gi), h, einf, n, sig_b, syt)
+        Nc_, Mc_ = _NM_beton_ELS(pts, n, eps0_, bt_)
+        yG_ = _yG(b, h, bs, hs, gs, bi, hi, gi)
+        return MserA - (Mc_ + Nc_ * (yG_ - einf))
+
+    return _brentq(f, 1e-5, 1.0 - 1e-5)
+
+
+@func
+def ELS_I_Ai_1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Cas 1 — Asup = 0 : Ainf."""
+    y        = solve_I_ELS_c1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    sig_b    = syt / n * (1.0 - 1.0 / y)
+    eps0, bt = _eps_beta_AB_ELS(yG, h, einf, n, sig_b, syt)
+    Nc, _    = _NM_beton_ELS(pts, n, eps0, bt)
+    return float((Ns - Nc) / syt * 1e4)
+
+
+# ── Cas 2 : Asup > 0, Ainf > 0 ───────────────────────────────────────────
+
+@func
+def ELS_I_sAs_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Contrainte Asup — cas 2."""
+    alpha = n*sb/(n*sb - syt)
+    sig_s = n*sb*(1-esup/(h-einf)/alpha)
+    return min(syc, sig_s)
+
+
+@func
+def ELS_I_As_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Cas 2 — Asup."""
+    MserA = ELS_I_MserA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    MAB   = ELS_I_MAB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    sAs   = ELS_I_sAs_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return float(1e4 * (MserA - MAB) / (h - esup - einf) / sAs)
+
+
+@func
+def ELS_I_Ai_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Cas 2 — Ainf."""
+    #MAB    = ELS_I_MAB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    NAB    = ELS_I_NAB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    sAs    = ELS_I_sAs_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    As_2   = ELS_I_As_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    
+     
+    return float(1e4 / (-syt) * (NAB+ As_2*1e-4 * sAs - Ns))
+
+
+# ── Cas 22 : Asup > 0, Ainf = 0 ──────────────────────────────────────────
+
+@func
+def solve_I_ELS_c22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Résout y (profondeur axe neutre) pour le cas 22."""
+    MserB = ELS_I_MserB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    yG    = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts   = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+
+    def f(y):
+        y_s  = max(y, 1e-4)
+        s_var = sb * n * (y_s - h + einf) / y_s
+        eps0_, bt_ = _eps_beta_AB_ELS(yG, h, einf, n, sb, s_var)
+        Nc_, Mc_   = _NM_beton_ELS(pts, n, eps0_, bt_)
+        return MserB - (-Mc_ + Nc_ * (h - yG - esup))
+
+    return _brentq(f, 1e-4, h * 5.0)
+
+
+@func
+def ELS_I_sAs_22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    y = solve_I_ELS_c22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return min(syc, n * sb * (1.0 - esup / y))
+
+
+@func
+def ELS_I_As_22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Cas 22 — Asup, Ainf = 0."""
+    y        = solve_I_ELS_c22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    s_var    = sb * n * (1.0 - (h - einf) / y)
+    eps0, bt = _eps_beta_AB_ELS(yG, h, einf, n, sb, s_var)
+    Nc, _    = _NM_beton_ELS(pts, n, eps0, bt)
+    sAs      = ELS_I_sAs_22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return float((Ns - Nc) / sAs * 1e4)
+
+
+# ── Cas 3 : pivot fibre inf (Ainf = 0) ───────────────────────────────────
+
+@func
+def ELS_I_MBO3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    beta= (n * sb / 200 - syt / 200) / (h - einf)
+    epo= syt / 200 + (Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi) - einf)*beta     
+    Mc_value = Mc_I_ELS(b, h, bs, hs, gs, bi, hi, gi, n, epo, beta)
+    Nc_value = Nc_I_ELS(b, h, bs, hs, gs, bi, hi, gi, n, epo, beta)
+    Nc_Gy_value = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+
+    return -Mc_value + Nc_value * (h - Nc_Gy_value - esup)
+    
+@func    
+def solve_I_ELS_c3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+  
+    y0 = 4*h  # valeur initiale 
+    def fN(y):
+        return ELS_I_MserB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms) - ELS_I_MBO3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, sb * n * (y - h + einf) / y, syc, Ns, Ms)
+    y_solution = fsolve(fN, y0)
+    
+    return y_solution[0]  
+
+
+@func
+def ELS_I_sAs_3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    y = solve_I_ELS_c3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return min(syc, n * sb * (1.0 - esup / y))
+
+
+@func
+def ELS_I_As_3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Cas 3."""
+    y        = solve_I_ELS_c3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    yG       = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts      = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    s_var    = sb * n * (1.0 - (h - einf) / y)
+    eps0, bt = _eps_beta_AB_ELS(yG, h, einf, n, sb, s_var)
+    Nc, _    = _NM_beton_ELS(pts, n, eps0, bt)
+    sAs      = ELS_I_sAs_3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return float((Ns - Nc) / sAs * 1e4)
+
+
+# ── Cas 4 : section entièrement comprimée ────────────────────────────────
+
+@func
+def ELS_I_Ai_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    MserB = ELS_I_MserB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    MBMax = ELS_I_MBMAX(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return float((MserB - MBMax) / n / sb / (h - esup - einf) * 1e4)
+
+
+@func
+def ELS_I_As_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    Ai_4 = ELS_I_Ai_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    Nc, _ = _NM_beton_ELS(pts, n, n * sb / 200.0, 0.0)
+    return float((Ns - float(Nc)) / n / sb * 1e4 - Ai_4)
+
+
+# ── Sélection automatique du cas ELS ─────────────────────────────────────
+
+def _section_area(b, h, bs, hs, gs, bi, hi, gi):
+    pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    f    = lambda x, y: np.ones_like(x, float)
+    return float(polygone_integrate(f, pts))
+
+
+@func
+def ELS_I_As_M(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Sélection automatique du cas ELS et calcul Asup."""
+    yG = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    if Ns < 0 and Ms / (Ns - 1e-15) >= -(yG - einf):
+        return ELS_I_As_t(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+    MserA = ELS_I_MserA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    MAB   = ELS_I_MAB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    if MserA <= MAB:
+        return 0.0
+
+    MserB = ELS_I_MserB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    MABp  = ELS_I_MAB_p(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    if MserB <= MABp:
+        return ELS_I_As_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+    MBO = ELS_I_MBO(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    if MserB <= MBO:
+        return ELS_I_As_22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+    MBMax = ELS_I_MBMAX(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    if MserB <= MBMax:
+        return ELS_I_As_3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+    return ELS_I_As_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+
+@func
+def ELS_I_Ai_M(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    """Sélection automatique du cas ELS et calcul Ainf."""
+    yG = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    if Ns < 0 and Ms / (Ns - 1e-15) >= -(yG - einf):
+        return ELS_I_Ai_t(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+    MserA = ELS_I_MserA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    MAB   = ELS_I_MAB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    if MserA <= MAB:
+        return ELS_I_Ai_1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+    MserB = ELS_I_MserB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    MABp  = ELS_I_MAB_p(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    if MserB <= MABp:
+        return ELS_I_Ai_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+    MBO = ELS_I_MBO(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    if MserB <= MBO:
+        return 0.0
+
+    MBMax = ELS_I_MBMAX(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    if MserB <= MBMax:
+        return 0.0
+
+    return ELS_I_Ai_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+
+
+@func
+def ELS_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    if Ms > 0:
+        return ELS_I_As_M(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return ELS_I_Ai_M(b, h, bi, hi, gi, bs, hs, gs, einf, esup, n, sb, syt, syc, Ns, -Ms)
+
+
+@func
+def ELS_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    if Ms > 0:
+        return ELS_I_Ai_M(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    return ELS_I_As_M(b, h, bi, hi, gi, bs, hs, gs, einf, esup, n, sb, syt, syc, Ns, -Ms)
+
+
+def _check_4pct(As, Ai, area):
+    """Retourne un message si la section totale dépasse 4 %."""
+    if (As + Ai) > 400.0 * area:
+        return "Section totale dépasse 4 %"
+    return None
+
+
+@func
+def ELS_I_As(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    As = ELS_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    Ai = ELS_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    msg = _check_4pct(As, Ai, _section_area(b, h, bs, hs, gs, bi, hi, gi))
+    if msg:   return msg
+    return max(0.0, As)
+
+
+@func
+def ELS_I_Ai(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    As = ELS_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    Ai = ELS_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms)
+    msg = _check_4pct(As, Ai, _section_area(b, h, bs, hs, gs, bi, hi, gi))
+    if msg:   return msg
+    return max(0.0, Ai)
+
+
+@func
+def ELS_I_A(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms):
+    return (ELS_I_As(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms),
+            ELS_I_Ai(b, h, bs, hs, gs, bi, hi, gi, esup, einf, n, sb, syt, syc, Ns, Ms))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 13. MOMENTS DE RÉFÉRENCE ELU
+# ════════════════════════════════════════════════════════════════════════════
+
+def _beta_epo_ELU(yG, h, einf, eps_bot, eps_top, pts, fck, fcd):
+    """Plan de déformation ELU générique → (eps0, beta, Nc, Mc)."""
+    beta   = (eps_top + eps_bot) / (h - einf)
+    eps0   = -eps_bot + (yG - einf) * beta
+    Nc, Mc = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    return eps0, beta, float(Nc), float(Mc)
+
+
+@func
+def ELU_I_MuA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """Moment appliqué / acier sup (bras de levier h−yG−esup)."""
+    yG = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    return float(-Mu + Nu * (h - yG - esup))
+
+
+@func
+def ELU_I_MuA1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """Moment appliqué / acier inf (bras de levier yG−einf)."""
+    yG = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    return float(Mu + Nu * (yG - einf))
+
+
+@func
+def ELU_I_MAB(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """Moment de référence MAB (pivot eps_ud à l'acier inf)."""
+    yG  = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    _, _, Nc, Mc = _beta_epo_ELU(yG, h, einf, eps_ud, eps_cu2(fck), pts, fck, fcd)
+    return float(Mc + Nc * (yG - einf))
+
+
+@func
+def ELU_I_ME(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """Moment de référence ME (pivot fyd/Es à l'acier inf)."""
+    yG  = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    _, _, Nc, Mc = _beta_epo_ELU(yG, h, einf, fyd / 200.0, eps_cu2(fck), pts, fck, fcd)
+    return float(Mc + Nc * (yG - einf))
+
+
+@func
+def ELU_I_ME_p(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """ME' — par rapport à acier sup."""
+    yG  = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    _, _, Nc, Mc = _beta_epo_ELU(yG, h, einf, fyd / 200.0, eps_cu2(fck), pts, fck, fcd)
+    return float(-Mc + Nc * (h - yG - esup))
+
+
+@func
+def ELU_I_MBC_p(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """MBC' — pivot axe neutre = fibre inf."""
+    yG  = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    beta   = eps_cu2(fck) / h
+    eps0   = yG * beta
+    Nc, Mc = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    return float(-Mc + Nc * (h - yG - esup))
+
+
+@func
+def ELU_I_M2_p(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """M2% — section entièrement comprimée (eps = eps_c2, beta = 0)."""
+    yG  = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    Nc, Mc = _NM_beton_ELU(pts, fck, fcd, float(eps_c2(fck)), 0.0)
+    return float(-Mc + Nc * (h - yG - esup))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 14. CALCUL DES ARMATURES ELU — MÉTHODE DES DOMAINES
+# ════════════════════════════════════════════════════════════════════════════
+
+def _solve_ELU_brentq(b, h, bs, hs, gs, bi, hi, gi, fck, fcd,
+                       target_M, bras, eps_c_ref, lo, hi_b):
+    """
+    Résout l'équilibre en moment (target_M = Mc + Nc × bras)
+    en cherchant la profondeur d'axe neutre x dans [lo, hi_b].
+    Retourne x, eps0, beta, Nc, Mc.
+    """
+    yG  = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+
+    def f(x):
+        x    = max(x, 1e-6)
+        beta = eps_c_ref / x
+        eps0 = eps_c_ref - (h - yG) * beta
+        Nc_, Mc_ = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+        return target_M - Mc_ - Nc_ * bras
+
+    x = _brentq(f, lo, hi_b)
+    beta = eps_c_ref / x
+    eps0 = eps_c_ref - (h - yG) * beta
+    Nc, Mc = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    return x, eps0, beta, float(Nc), float(Mc)
+
+
+# ── Cas tendu (tout acier) ────────────────────────────────────────────────
+
+@func
+def ELU_I_As_t(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    sig_s=sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_ud) # allongement max
+    MuA1 = abs(ELU_I_MuA1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu))
+    return float(MuA1 / (h - esup - einf) / sig_s * 1e4)
+
+
+@func
+def ELU_I_Ai_t(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    sig_s=sigma_s_palier(fyd, k, eps_uk,eps_ud, eps_ud) # allongement max
+    MuA1 = abs(ELU_I_MuA1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu))
+    return float(Nu / (-sig_s) * 1e4 - MuA1 / (h - esup - einf) / sig_s * 1e4)
+
+
+# ── Domaine 1 : eps_inf = eps_ud (très grande traction) ──────────────────
+
+@func
+def solve_I_ELU_c1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    MuA1 = ELU_I_MuA1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    yG   = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+
+    def f(alp):
+        alp  = np.clip(alp, 1e-6, 0.999 * (h - einf))
+        denom = h - einf - alp
+        beta = eps_ud / denom
+        eps0 = -eps_ud + (yG - einf) * beta
+        Nc_, Mc_ = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+        return MuA1 - Mc_ - Nc_ * (yG - einf)
+
+    return _brentq(f, 1e-6, 0.999 * (h - einf))
+
+
+@func
+def ELU_I_Ai_1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    alp  = solve_I_ELU_c1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    yG   = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    beta = eps_ud / (h - einf - alp)
+    eps0 = -eps_ud + (yG - einf) * beta
+    Nc, _   = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    sig_s   = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, eps_ud))
+    return float(-(Nu - Nc) / sig_s * 1e4)
+
+
+# ── Domaine 2 : pivot eps_cu2 en fibre sup ───────────────────────────────
+
+@func
+def solve_I_ELU_c2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    MuA1 = ELU_I_MuA1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    yG   = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    bras = yG - einf
+    return _solve_ELU_brentq(b, h, bs, hs, gs, bi, hi, gi, fck, fcd,
+                              MuA1, bras, float(eps_cu2(fck)), 1e-4, 5.0*h)[0]
+
+
+@func
+def ELU_I_Ai_2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    alp2 = solve_I_ELU_c2(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    yG   = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    ecu  = float(eps_cu2(fck))
+    beta = ecu / alp2
+    eps0 = ecu - (h - yG) * beta
+    Nc, _ = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    sig_s = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, eps0 + beta * (-yG + einf)))
+    return float((Nu - Nc) / sig_s * 1e4)
+
+
+# ── Domaine 2.1 : Asup > 0, Ainf > 0 (pivot ME) ─────────────────────────
+
+@func
+def ELU_I_As_21(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    MuA1  = ELU_I_MuA1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    ME    = ELU_I_ME(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    ecu   = float(eps_cu2(fck))
+    eps_sd = fyd / 200000 * 1000.0
+    bras_x = einf * (1.0 + 200.0 * ecu / fyd) * fyd / 200.0 / ecu / (h - einf)
+    sig_s  = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, ecu * (1.0 - bras_x)))
+    return float(1e4 * (MuA1 - ME) / (h - esup - einf) / sig_s)
+
+
+@func
+def ELU_I_Ai_21(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    yG    = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts   = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    MuA1  = ELU_I_MuA1(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    ME    = ELU_I_ME(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    ecu   = float(eps_cu2(fck))
+    beta  = (ecu + fyd / 200.0) / (h - einf)
+    eps0  = -fyd / 200.0 + (yG - einf) * beta
+    Nc, _ = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    return float(1e4 / fyd * (-Nu + Nc + (MuA1 - ME) / (h - esup - einf)))
+
+
+# ── Domaine 2.2 : Asup > 0, Ainf = 0 ────────────────────────────────────
+
+@func
+def solve_I_ELU_c22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    ELU_MA = ELU_I_MuA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    Nc_gy = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+ 
+    
+    x0 = 0.8*h  # valeur initiale 
+    def fN(x):
+        Mc_I_ELU= Mc_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi, fck, fcd, eps_cu2(fck) - (h - Nc_gy) * eps_cu2(fck) / x, eps_cu2(fck) / x)
+        Nc_I_ELU = Nc_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi, fck, fcd, eps_cu2(fck) - (h - Nc_gy) * eps_cu2(fck) / x, eps_cu2(fck) / x)
+        return ELU_MA + Mc_I_ELU - Nc_I_ELU * (h - Nc_gy - esup)
+
+    x_solution = fsolve(fN, x0)
+    return x_solution[0]
+
+
+@func
+def ELU_I_As_22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    alp  = solve_I_ELU_c22(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    yG   = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    ecu  = float(eps_cu2(fck))
+    beta = ecu / alp
+    eps0 = ecu - (h - yG) * beta
+    Nc, _ = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    sig_s = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, eps0 + beta * (h - yG - esup)))
+    return float((Nu - Nc) / sig_s * 1e4)
+
+
+# ── Domaine 3 : M2% > MuA' (section très comprimée) ─────────────────────
+
+
+@func
+def solve_I_ELU_c3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    ELU_MA = ELU_I_MuA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    Nc_gy = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+ 
+    
+    x0 = 0.8*h  # valeur initiale 
+    def fN(x):
+        Mc_I_ELU= Mc_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi, fck, fcd, eps_cu2(fck) - (h - Nc_gy) * eps_cu2(fck) / x, eps_cu2(fck) / x)
+        Nc_I_ELU = Nc_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi, fck, fcd, eps_cu2(fck) - (h - Nc_gy) * eps_cu2(fck) / x, eps_cu2(fck) / x)
+        return ELU_MA + Mc_I_ELU - Nc_I_ELU * (h - Nc_gy - esup)
+
+    x_solution = fsolve(fN, x0)
+    return x_solution[0] 
+
+@func
+def ELU_I_As_3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    alp  = solve_I_ELU_c3(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    yG   = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    pts  = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    ecu  = float(eps_cu2(fck))
+    beta = ecu / alp
+    eps0 = ecu - (h - yG) * beta
+    Nc, _ = _NM_beton_ELU(pts, fck, fcd, eps0, beta)
+    sig_s = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, ecu * (alp - esup) / alp))
+    return float((Nu - Nc) / sig_s * 1e4)
+
+@func
+def ELU_I_Ai_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    MuA   = ELU_I_MuA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    M2p   = ELU_I_M2_p(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    sig_s = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, float(eps_c2(fck))))
+    return float(1e4 * (MuA - M2p) / (h - esup - einf) / sig_s)
+
+
+@func
+def ELU_I_As_4(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    pts   = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
+    Nc, _ = _NM_beton_ELU(pts, fck, fcd, float(eps_c2(fck)), 0.0)
+    MuA   = ELU_I_MuA(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    M2p   = ELU_I_M2_p(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    sig_s = float(sigma_s_palier(fyd, k, eps_uk, eps_ud, float(eps_c2(fck))))
+    return float(1e4 / sig_s * (Nu - Nc - (MuA - M2p) / (h - esup - einf)))
+
+
+# ── Sélection automatique du domaine ELU ─────────────────────────────────
+
+@func
+def ELU_I_As_M(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """Asup — sélection automatique du domaine."""
+    yG   = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    args = (b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+
+    if Nu < 0 and Mu / (Nu - 1e-15) >= -(yG - einf):
+        return ELU_I_As_t(*args)
+
+    MuA1 = ELU_I_MuA1(*args);  ME   = ELU_I_ME(*args)
+    if MuA1 <= ME:
+        return 0.0
+
+    MuA  = ELU_I_MuA(*args);   MEp  = ELU_I_ME_p(*args)
+    if MuA <= MEp:
+        return ELU_I_As_21(*args)
+
+    MBCp = ELU_I_MBC_p(*args)
+    if MuA <= MBCp:
+        return ELU_I_As_22(*args)
+
+    M2p = ELU_I_M2_p(*args)
+    if MuA <= M2p:
+        return ELU_I_As_3(*args)
+
+    return ELU_I_As_4(*args)
+
+
+@func
+def ELU_I_Ai_M(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    """Ainf — sélection automatique du domaine."""
+    yG   = _yG(b, h, bs, hs, gs, bi, hi, gi)
+    args = (b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+
+    if Nu < 0 and Mu / (Nu - 1e-15) >= -(yG - einf):
+        return ELU_I_Ai_t(*args)
+
+    MuA1 = ELU_I_MuA1(*args);  MAB = ELU_I_MAB(*args)
+    if MuA1 <= MAB:
+        return ELU_I_Ai_1(*args)
+
+    ME = ELU_I_ME(*args)
+    if MuA1 <= ME:
+        return ELU_I_Ai_2(*args)
+
+    MuA = ELU_I_MuA(*args);  MEp = ELU_I_ME_p(*args)
+    if MuA <= MEp:
+        return ELU_I_Ai_21(*args)
+
+    MBCp = ELU_I_MBC_p(*args)
+    if MuA <= MBCp:
+        return 0.0
+
+    M2p = ELU_I_M2_p(*args)
+    if MuA <= M2p:
+        return 0.0
+
+    return ELU_I_Ai_4(*args)
+
+
+@func
+def ELU_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    if Mu > 0:
+        return ELU_I_As_M(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    return ELU_I_Ai_M(b, h, bi, hi, gi, bs, hs, gs, einf, esup, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, -Mu)
+
+
+@func
+def ELU_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    if Mu > 0:
+        return ELU_I_Ai_M(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    return ELU_I_As_M(b, h, bi, hi, gi, bs, hs, gs, einf, esup, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, -Mu)
+
+
+@func
+def ELU_I_As(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    As = ELU_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    Ai = ELU_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    msg = _check_4pct(As, Ai, _section_area(b, h, bs, hs, gs, bi, hi, gi))
+    if msg:   return msg
+    return max(0.0, As)
+
+
+@func
+def ELU_I_Ai(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    As = ELU_I_As_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    Ai = ELU_I_Ai_Max(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu)
+    msg = _check_4pct(As, Ai, _section_area(b, h, bs, hs, gs, bi, hi, gi))
+    if msg:   return msg
+    return max(0.0, Ai)
+
+
+@func
+def ELU_I_A(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu):
+    return (ELU_I_As(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu),
+            ELU_I_Ai(b, h, bs, hs, gs, bi, hi, gi, esup, einf, fck, fcd, fyd, k, eps_uk, eps_ud, Nu, Mu))
+
+# Dessin la section
+import matplotlib.pyplot as plt
+import io
+@func
+def dessiner_section_I(b, h, bs, hs, gs, bi, hi, gi):
+    # 1. Tes calculs géométriques (appels à tes fonctions existantes)
+    yg_val = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+    poly_centre = section_I(b, h, bs, hs, gs, bi, hi, gi)
+
+    # 2. Création du graphique avec le backend non-interactif
+    fig, ax = plt.subplots(figsize=(5, 7))
+    
+    x_coords = poly_centre[:, 0]
+    y_coords = poly_centre[:, 1]
+    
+    ax.plot(x_coords, y_coords, color='navy', linewidth=2)
+    ax.fill(x_coords, y_coords, color='lightsteelblue', alpha=0.5)
+    ax.axhline(0, color='red', linestyle='--', linewidth=1)
+    ax.set_aspect('equal')
+    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.set_title(f"Section Recentrée (yg={yg_val:.3f})")
+
+    # 3. CRUCIAL POUR LITE : Convertir la figure en image pour le retour
+    # Si tu utilises le système de fonctions personnalisées (UDF) de Lite :
+    return fig
+@func
+def create_triangles(vertices, max_depth=0):
+    vertices = np.array(vertices)
+    tri = Delaunay(vertices, qhull_options="QJ")
+    polygon_path = Path(vertices)
+    
+    def is_triangle_inside(triangle):
+        centroid = np.mean(triangle, axis=0)
+        return polygon_path.contains_point(centroid)
+    
+    def subdivide_triangle(triangle, depth):
+        if depth >= max_depth:
+            return [triangle]
+        
+        midpoints = [(triangle[i] + triangle[(i + 1) % 3]) / 2 for i in range(3)]
+        new_triangles = [
+            [triangle[0], midpoints[0], midpoints[2]],
+            [triangle[1], midpoints[0], midpoints[1]],
+            [triangle[2], midpoints[1], midpoints[2]],
+            [midpoints[0], midpoints[1], midpoints[2]]
+        ]
+        
+        subdivided_triangles = []
+        for t in new_triangles:
+            subdivided_triangles.extend(subdivide_triangle(np.array(t), depth + 1))
+        
+        return subdivided_triangles
+    
+    triangles = []
+    for simplex in tri.simplices:
+        triangle = vertices[simplex]
+        if is_triangle_inside(triangle):
+            triangles.extend(subdivide_triangle(triangle, 0))
+    
+    return triangles
+@func
+@func
+def plot_triangles(b, h, bs, hs, gs, bi, hi, gi, Asup, Ainf, esup, einf, ratio):
+    # 1. Calculs géométriques
+    points = section_I(b, h, bs, hs, gs, bi, hi, gi)
+    tri_pol = create_triangles(points)    
+    yg = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+    
+    # 2. Création de la figure (Nettoyage des doubles fenêtres)
+    fig, ax = plt.subplots()
+    #fig, ax = plt.subplots(figsize=(6, 6))
+
+    # 3. Tracé du contour bleu
+    x, y = zip(*points)
+    x_plot = list(x) + [x[0]]
+    y_plot = list(y) + [y[0]]
+    ax.plot(x_plot, y_plot, linestyle='-', color='blue', linewidth=1.0)
+
+    # 4. Remplissage par triangles (Gris transparent)
+    for triangle in tri_pol:
+        t_arr = np.array(triangle)
+        ax.fill(t_arr[:, 0], t_arr[:, 1], 
+                edgecolor=(0.5, 0.5, 0.5, 0.2), 
+                facecolor=(0.6, 0.6, 0.6, 0.5), 
+                linewidth=0.1)
+
+    # 5. Dessin des Aciers (Points seuls, sans ligne)
+    # On définit un décalage horizontal dynamique pour le texte (5% de la largeur)
+    offset = b * 0.1 
+
+    # Acier Supérieur (Vert)
+    yas = h - yg - esup
+    ax.plot(0, yas, marker='o', color='green', markersize=5, linestyle='None')
+    ax.text(offset, yas,  f"Asup", 
+            color='black', fontsize=8, va='center')
+
+    # Acier Inférieur (Orange)
+    yai = einf - yg 
+    ax.plot(0, yai, marker='o', color='orange', markersize=5, linestyle='None')
+    ax.text(offset, yai, f"Ainf", 
+            color='black', fontsize=8, va='center')
+
+    # 6. Configuration finale de l'affichage
+    # set_aspect(1/ratio) pour respecter les unités réelles demandées
+    ax.set_aspect(ratio, adjustable='datalim')
+    
+    ax.set_title('Section prise en compte', fontweight='bold', pad=15)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    
+    #plt.tight_layout() # Optimise l'espace autour du graphique
+    plt.tight_layout()
+    plt.show()
+    
+    return fig
