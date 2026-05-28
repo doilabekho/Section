@@ -206,6 +206,8 @@ def _yG(b, h, bs, hs, gs, bi, hi, gi):
     """Raccourci pour obtenir l'ordonnée absolue du CDG."""
     return Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
 
+
+
 def _NM_beton_ELS(pts, n, eps0, beta):
     """
     Calcule [Nc, Mc] en ELS (UNE seule passe via Gauss 1D).
