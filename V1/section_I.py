@@ -9,6 +9,7 @@ from xlwings import func
 from beton import *   # ← fonctionne en local et sur GitHub
 from acier import *   # ← fonctionne en local et sur GitHub	
 
+_ES =200000
 """
 ========================================================================
 CALCUL DE SECTIONS EN I — BÉTON ARMÉ (EC2)
