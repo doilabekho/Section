@@ -48,26 +48,28 @@ Conventions :
 #   │                                     │  hi
 #   └──────────────── bi ─────────────────┘
 
-@func
+import numpy as np
+
+# ════════════════════════════════════════════════════════════════════════════
+# 1. GÉOMÉTRIE ET POLYNÔMES (Repère initial et centré)
+# ════════════════════════════════════════════════════════════════════════════
+
 def trans_i(b, h, bs, hs, gs, bi, hi, gi):
     """Retourne les sommets du polygone section I (sens trigonométrique)."""
     return np.array([
-        [-bi/2, 0],      [-bi/2+bi, 0],
-        [ bi/2, hi],     [ b/2,     hi + gi],
-        [ b/2,  h-hs-gs],[ bs/2,   h - hs],
-        [ bs/2, h],      [-bs/2,   h],
-        [-bs/2, h-hs],   [-b/2,    h-hs-gs],
-        [-b/2,  hi+gi],  [-bi/2,   hi],
+        [-bi/2, 0],       [-bi/2+bi, 0],
+        [ bi/2, hi],      [ b/2,     hi + gi],
+        [ b/2,  h-hs-gs], [ bs/2,    h - hs],
+        [ bs/2, h],       [-bs/2,    h],
+        [-bs/2, h-hs],    [-b/2,     h-hs-gs],
+        [-b/2,  hi+gi],   [-bi/2,    hi],
         [-bi/2, 0],
     ], dtype=float)
 
 
-
-@func
 def Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi):
     """Ordonnée du centre de gravité (fibre inf = 0)."""
     pts = trans_i(b, h, bs, hs, gs, bi, hi, gi)
-    n   = len(pts) - 1   # dernier point = premier (polygone fermé)
     x0, y0 = pts[:-1, 0], pts[:-1, 1]
     x1, y1 = pts[1:,  0], pts[1:,  1]
     aire_el = x0 * y1 - x1 * y0
@@ -76,7 +78,6 @@ def Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi):
     return float(yG)
 
 
-@func
 def section_I(b, h, bs, hs, gs, bi, hi, gi):
     """Polygone centré sur le CDG (y_CDG = 0)."""
     yG   = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
@@ -86,88 +87,77 @@ def section_I(b, h, bs, hs, gs, bi, hi, gi):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 4. INTÉGRATEUR POLYGONAL
+# 2. MOTEUR D'INTÉGRATION UNIFIÉ (Centré analytiquement sur le CDG)
 # ════════════════════════════════════════════════════════════════════════════
 
+import numpy as np
 
-
-def calculer_NM_beton(geom, eps0, beta, mode='ELS', n_els=15.0, fck=None, fcd=None):
+def calculer_NM_beton(pts, eps0, beta, mode='ELS', n_els=15.0, fck=30.0, fcd=20.0):
     """
-    Calcule [Nc, Mc_y] pour une section en I avec goussets en une seule passe.
-    Totalement épuré (sans acier, sans Shapely, sans intégration de contour).
+    Calcule [Nc, Mc_y] en une seule passe à partir du polygone 'pts' centré au CDG.
     
     Parameters:
     -----------
-    geom  : dict contenant 'h', 'hi', 'gi', 'b', 'gs', 'hs', 'bs'
-    eps0  : déformation à l'origine (y = 0, fibre inférieure)
-    beta  : courbure de la section (gradient de déformation selon y)
+    pts   : np.ndarray des sommets de la section (généré par section_I)
+    eps0  : déformation au CDG (y = 0)
+    beta  : courbure (gradient de déformation selon y)
     mode  : 'ELS' ou 'ELU'
-    n_els : coefficient d'équivalence acier-béton (utilisé si mode='ELS')
-    fck   : résistance caractéristique du béton (MPa)
-    fcd   : résistance de calcul du béton (MPa)
-    
-    Returns:
-    --------
-    (Nc, Mc_y) : Effort normal (N) et Moment fléchissant (N.m ou N.mm selon vos unités)
     """
-    # 1. Extraction et positionnement des 5 couches (Fibre inf à y = 0)
-    h, h_i, g_i, b_i = geom['h'], geom['hi'], geom['gi'], geom['bi']
-    b, g_s, h_s, b_s = geom['b'], geom['gs'], geom['hs'], geom['bs']
+    # 1. Extraction directe des altitudes (y) des 5 couches depuis 'pts'
+    # 'pts' étant centré sur le CDG, ces valeurs intègrent déjà le décalage -yG
+    y0 = pts[0, 1]   # Base de la table inférieure
+    y1 = pts[2, 1]   # Sommet de la table inférieure / Bas du gousset inf
+    y2 = pts[3, 1]   # Sommet du gousset inf / Bas de l'âme
+    y3 = pts[4, 1]   # Sommet de l'âme / Bas du gousset sup
+    y4 = pts[5, 1]   # Sommet du gousset sup / Bas de la table sup
+    y5 = pts[6, 1]   # Sommet de la table supérieure
     
-    y0 = 0.0
-    y1 = h_i
-    y2 = h_i + g_i
-    y3 = h - h_s - g_s
-    y4 = h - h_s
-    y5 = h
+    # 2. Extraction des largeurs (b) par différence des coordonnées X (X_droit - X_gauche)
+    bi_start = pts[1, 0] - pts[0, 0]  # Largeur bi de la table inf
+    bi_end   = pts[2, 0] - pts[11, 0] # Fin de la table inf
+    b_start  = pts[3, 0] - pts[10, 0] # Largeur b de l'âme
+    b_end    = pts[4, 0] - pts[9, 0]  # Fin de l'âme
+    bs_start = pts[5, 0] - pts[8, 0]  # Largeur bs de la table sup
+    bs_end   = pts[6, 0] - pts[7, 0]  # Sommet de la table sup
     
-    # Définition des couches : (y_start, y_end, largeur_départ, largeur_arrivée)
+    # Définition des 5 couches géométriques : (y_min, y_max, b_départ, b_arrivée)
     couches = [
-        (y0, y1, b_i, b_i),  # 1. Table inférieure (Rectangle)
-        (y1, y2, b_i, b),    # 2. Gousset inférieur (Trapèze)
-        (y2, y3, b, b),      # 3. Âme (Rectangle)
-        (y3, y4, b, b_s),    # 4. Gousset supérieur (Trapèze)
-        (y4, y5, b_s, b_s)   # 5. Table supérieure (Rectangle)
+        (y0, y1, bi_start, bi_end),  # 1. Table inférieure (Rectangle)
+        (y1, y2, bi_end, b_start),   # 2. Gousset inférieur (Trapèze)
+        (y2, y3, b_start, b_end),    # 3. Âme (Rectangle)
+        (y3, y4, b_end, bs_start),   # 4. Gousset supérieur (Trapèze)
+        (y4, y5, bs_start, bs_end)   # 5. Table supérieure (Rectangle)
     ]
     
-    # 2. Paramétrage des constantes matériaux et seuils selon le mode
+    # 3. Paramétrage des constantes matériaux selon le mode
     if mode == 'ELS':
-        # Calcul du module ou de la rigidité selon votre constante originale :
-        # C = 200000 / (n * 1000)
         C_els = 200000.0 / (float(n_els) * 1000.0)
-        e2 = 0.0  # Non utilisé en ELS
-        expo_elu = 2.0
+        e2, expo_elu = 0.0, 2.0
     else:  # mode == 'ELU'
-        # Lois Eurocode 2 pour le diagramme Parabole-Rectangle
         if fck <= 50.0:
-            e2 = 2.0e-3
-            expo_elu = 2.0
+            e2, expo_elu = 2.0e-3, 2.0
         else:
             e2 = (2.0 + 0.085 * (fck - 50.0)**0.53) * 10e-3
             expo_elu = 1.4 + 23.4 * ((90.0 - fck) / 100.0)**4
 
-    # Points et poids de la quadrature de Gauss-Legendre à 3 points
+    # Quadrature de Gauss-Legendre à 3 points
     gauss_points = np.array([-np.sqrt(3/5), 0.0, np.sqrt(3/5)])
     gauss_weights = np.array([5/9, 8/9, 5/9])
     
     Nc = 0.0
     Mc_y = 0.0
     
-    # 3. Boucle d'intégration sur les couches géométriques
+    # 4. Boucle d'intégration
     for y_start, y_end, b_start, b_end in couches:
         if y_start >= y_end:
             continue
             
-        # Détermination des points de transition (changement de comportement de la loi)
         splits = [y_start, y_end]
-        
         if abs(beta) > 1e-12:
-            # Transition Béton tendu / comprimé (eps = 0)
             y_zero = -eps0 / beta
             if y_start < y_zero < y_end:
                 splits.append(y_zero)
                 
-            # Transition Parabole / Rectangle en ELU (eps = e2)
             if mode == 'ELU':
                 y_e2 = (e2 - eps0) / beta
                 if y_start < y_e2 < y_end:
@@ -175,11 +165,8 @@ def calculer_NM_beton(geom, eps0, beta, mode='ELS', n_els=15.0, fck=None, fcd=No
                     
         splits = sorted(list(set(splits)))
         
-        # Intégration sur chaque sous-intervalle régulier
         for i in range(len(splits) - 1):
             y_min, y_max = splits[i], splits[i+1]
-            
-            # Changement de variable vers l'espace de Gauss [-1, 1]
             half_len = (y_max - y_min) / 2.0
             mean_val = (y_max + y_min) / 2.0
             
@@ -187,52 +174,47 @@ def calculer_NM_beton(geom, eps0, beta, mode='ELS', n_els=15.0, fck=None, fcd=No
                 y_g = half_len * xi + mean_val
                 eps_g = eps0 + beta * y_g
                 
-                # Calcul de la contrainte sigma selon la loi idoine
+                # Calcul de la contrainte sigma
                 if eps_g <= 0:
                     sig = 0.0
                 elif mode == 'ELS':
                     sig = C_els * eps_g
-                else:  # 'ELU'
-                    if eps_g <= e2:
-                        sig = fcd * (1.0 - (1.0 - eps_g / e2)**expo_elu)
-                    else:
-                        sig = fcd
+                else: 
+                    sig = fcd * (1.0 - (1.0 - eps_g / e2)**expo_elu) if eps_g <= e2 else fcd
                 
-                # Interpolation linéaire de la largeur du gousset b(y) au point de Gauss
+                # Interpolation de la largeur b(y) au point de Gauss
                 t = (y_g - y_start) / (y_end - y_start) if abs(y_end - y_start) > 1e-11 else 0.0
                 b_g = b_start + t * (b_end - b_start)
                 
-                # Calcul du poids élémentaire dA = b(y) * dy
                 facteur_integration = wi * half_len * b_g
                 
-                # Sommation en une seule passe de [sig, sig * y]
                 Nc += sig * facteur_integration
                 Mc_y += sig * y_g * facteur_integration
                 
     return Nc, Mc_y
 
-
 # ════════════════════════════════════════════════════════════════════════════
-# 5. EFFORTS INTERNES — ELS  (loi linéaire, béton fissuré)
+# 3. INTERFACES COMPORTEMENTALES (Passage obligé par le dictionnaire 'geom')
 # ════════════════════════════════════════════════════════════════════════════
 
 def _pts_I(b, h, bs, hs, gs, bi, hi, gi):
-    """Raccourci : polygone centré."""
+    """Raccourci pour obtenir le polygone centré."""
     return section_I(b, h, bs, hs, gs, bi, hi, gi)
 
 
 def _yG(b, h, bs, hs, gs, bi, hi, gi):
-    """Raccourci : ordonnée du CDG."""
+    """Raccourci pour obtenir l'ordonnée absolue du CDG."""
     return Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
 
 
-def _NM_beton_ELS(pts, n, eps0, beta):
+def _NM_beton_ELS(pts n, eps0, beta):
     """
-    Calcule [Nc, Mc] en UNE seule passe d'intégration (vecteur [sig, sig·y]).
-    Évite deux appels séparés à polygone_integrate.
+    Calcule [Nc, Mc] en ELS (UNE seule passe via Gauss 1D).
+    Le premier argument est désormais le dictionnaire 'geom'.
     """
+    return calculer_NM_beton(pts, eps0, beta, mode='ELS', n_els=n)
 
-    return calculer_NM_beton(pts, eps0, beta, mode='ELS', n_els=n):
+
 
 
 def _NM_acier_ELS(yG, h, asup, ainf, esup, einf, eps0, beta):
@@ -248,12 +230,77 @@ def _NM_acier_ELS(yG, h, asup, ainf, esup, einf, eps0, beta):
 
 @func
 def S_com(b, h, bs, hs, gs, bi, hi, gi, eps0, beta):
-    """Surface comprimée (zone où ε > 0)."""
+    """
+    Surface comprimée (zone où ε > 0).
+    Calcul analytique exact par couches, sans polygone_integrate ni approximation.
+    """
+    # 1. Génération du polygone centré au CDG
     pts = _pts_I(b, h, bs, hs, gs, bi, hi, gi)
-    def f(x, y):
-        eps = eps0 + beta * y
-        return (eps + np.abs(eps)) / (2.0 * np.abs(eps) + 1e-15)
-    return float(polygone_integrate(f, pts))
+    
+    # 2. Extraction des altitudes (y) des 5 couches (déjà centrées sur le CDG)
+    y0 = pts[0, 1]   # Base de la table inférieure
+    y1 = pts[2, 1]   # Sommet de la table inférieure / Bas du gousset inf
+    y2 = pts[3, 1]   # Sommet du gousset inf / Bas de l'âme
+    y3 = pts[4, 1]   # Sommet de l'âme / Bas du gousset sup
+    y4 = pts[5, 1]   # Sommet du gousset sup / Bas de la table sup
+    y5 = pts[6, 1]   # Sommet de la table supérieure
+    
+    # 3. Extraction des largeurs (b) associées
+    bi_start = pts[1, 0] - pts[0, 0]  # Largeur bi de la table inf
+    bi_end   = pts[2, 0] - pts[11, 0] # Fin de la table inf
+    b_start  = pts[3, 0] - pts[10, 0] # Largeur b de l'âme
+    b_end    = pts[4, 0] - pts[9, 0]  # Fin de l'âme
+    bs_start = pts[5, 0] - pts[8, 0]  # Largeur bs de la table sup
+    bs_end   = pts[6, 0] - pts[7, 0]  # Sommet de la table sup
+    
+    couches = [
+        (y0, y1, bi_start, bi_end),  # 1. Table inférieure
+        (y1, y2, bi_end, b_start),   # 2. Gousset inférieur
+        (y2, y3, b_start, b_end),    # 3. Âme
+        (y3, y4, b_end, bs_start),   # 4. Gousset supérieur
+        (y4, y5, bs_start, bs_end)   # 5. Table supérieure
+    ]
+    
+    s_com_total = 0.0
+    
+    # 4. Boucle de détection et de sommation des aires comprimées
+    for y_start, y_end, b_start, b_end in couches:
+        if y_start >= y_end:
+            continue
+            
+        # Trouver la frontière de fissuration (ε = 0) au sein de la couche
+        splits = [y_start, y_end]
+        if abs(beta) > 1e-12:
+            y_zero = -eps0 / beta
+            if y_start < y_zero < y_end:
+                splits.append(y_zero)
+                
+        splits = sorted(list(set(splits)))
+        
+        # Intégration géométrique des sous-intervalles
+        for i in range(len(splits) - 1):
+            y_min, y_max = splits[i], splits[i+1]
+            
+            # Test du signe de la déformation au milieu du sous-intervalle
+            y_milieu = (y_min + y_max) / 2.0
+            eps_milieu = eps0 + beta * y_milieu
+            
+            # Si le segment est comprimé (ε > 0), on ajoute son aire géométrique
+            if eps_milieu > 0:
+                # Interpolation locale des largeurs aux bornes y_min et y_max
+                if abs(y_end - y_start) > 1e-11:
+                    t_min = (y_min - y_start) / (y_end - y_start)
+                    t_max = (y_max - y_start) / (y_end - y_start)
+                    b_min = b_start + t_min * (b_end - b_start)
+                    b_max = b_start + t_max * (b_end - b_start)
+                else:
+                    b_min, b_max = b_start, b_end
+                
+                # Formule analytique exacte de l'aire d'un trapèze : (b1 + b2) * h / 2
+                aire_trapeze = 0.5 * (b_min + b_max) * (y_max - y_min)
+                s_com_total += aire_trapeze
+                
+    return float(s_com_total)
 
 
 @func
@@ -314,26 +361,9 @@ def M_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
 
 @func
 def calculer_N_M(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
-    points = section_I(b, h, bs, hs, gs, bi, hi, gi)
     
-    def f_complet( x,y):
-        eps = eps0  + beta * y
-        sig = sigma_c_n(eps, n)
-        return np.array([sig, sig * y])
-
-    # Calcul béton (Plein)
-    Nc, Mc = polygone_integrate(f_complet, points)
-    
-    # Calculs pour l'acier
-    yc = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
-    Nssup = sigma_s_lin(eps0 + (h - yc - esup) * beta) * asup * 0.0001
-    Nsinf = sigma_s_lin(eps0 + (-yc + einf) * beta) * ainf * 0.0001    
-    Mssup = Nssup * (h - yc - esup)
-    Msinf = Nsinf * (-yc + einf)
-
-    # Somme des contributions béton et acier
-    N = Nssup + Nsinf + Nc
-    M = Mssup + Msinf + Mc
+    N =  N_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
+    M =  M_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
     return N, M
 @func
 def solve_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, Nobj, Mobj):
@@ -423,8 +453,10 @@ def e_resultats_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, e
 # ════════════════════════════════════════════════════════════════════════════
 
 def _NM_beton_ELU(pts, fck, fcd, eps0, beta):
-
-    return calculer_NM_beton(pts, eps0, beta, mode='ELU', n_els=15.0, fck=fck, fcd=fcd)
+    """
+    Calcule [Nc, Mc] en ELU (UNE seule passe via Gauss 1D).
+    """
+    return calculer_NM_beton(pts, eps0, beta, mode='ELU', fck=fck, fcd=fcd)
 
 
 def _NM_acier_ELU(yG, h, asup, ainf, esup, einf,
@@ -511,27 +543,13 @@ def M_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi,
 def calculer_N_M_ELU(b,h,bs,hs,gs,bi,hi,gi,asup,ainf,esup,einf, fck,fcd,fyd,k,eps_uk,eps_ud,eps0,beta):
     # Calcul pour la partie béton (Ic et Iv pour les trois valeurs N, My, Mz)
     points = section_I(b,h,bs,hs,gs,bi,hi,gi)
-    def f_ELU_complet(x,y):
-        eps = eps0  + beta * y
-        # On utilise la loi parabole-rectangle optimisée
-        sig = sigma_c_pararect1(fck, fcd, eps)
-        return np.array([sig, sig * y])
-
-    # Calcul béton plein
-    N, M = polygone_integrate(f_ELU_complet, points)
-     
-    # Calcul pour la partie acier
     
-        # Calculs pour l'acier
-    yc = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
-    Nssup = sigma_s_palier(fyd,k,eps_uk,eps_ud,eps0+(h-yc-esup)*beta)*asup*0.0001
-    Nsinf = sigma_s_palier(fyd,k,eps_uk,eps_ud,eps0+(-yc+einf)*beta)*ainf*0.0001
-    Mssup = Nssup * (h - yc - esup)
-    Msinf = Nsinf * (-yc + einf)
-
-    # Somme des contributions béton et acier
-    N = Nssup + Nsinf + N
-    M = Mssup + Msinf + M
+    N = N_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi,
+                      asup, ainf, esup, einf,
+                      fck, fcd, fyd, k, eps_uk, eps_ud, eps0, beta)
+    M = M_I_ELU_pararect(b, h, bs, hs, gs, bi, hi, gi,
+                      asup, ainf, esup, einf,
+                      fck, fcd, fyd, k, eps_uk, eps_ud, eps0, beta)
     
     
     return N, M
