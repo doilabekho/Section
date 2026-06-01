@@ -1775,3 +1775,164 @@ def plot_triangles(b, h, bs, hs, gs, bi, hi, gi, Asup, Ainf, esup, einf, ratio):
     plt.show()
     
     return fig
+# ════════════════════════════════════════════════════════════════════════════
+# 11. CARACTÉRISTIQUES MÉCANIQUES — BRUTE / HOMOGÉNÉISÉE / FISSURÉE
+# ════════════════════════════════════════════════════════════════════════════  
+
+def _elem_brute(elems):
+    """
+    Calcule (A, y_CDG, I_propre) pour chaque élément de la section brute.
+ 
+    Chaque élément est soit un rectangle soit un trapèze.
+    elems : liste de (type, b_haut, b_bas_ou_None, hauteur, y_sommet)
+    """
+    A_list, y_list, I_list = [], [], []
+ 
+    for typ, b1, b2, hi_e, y_top in elems:
+        if typ == "rect":
+            A = b1 * hi_e
+            y = y_top + hi_e / 2.0
+            I = b1 * hi_e ** 3 / 12.0
+        else:  # trapèze
+            A = (b1 + b2) / 2.0 * hi_e
+            y_loc = hi_e * (2.0 * b2 + b1) / (3.0 * (b1 + b2))
+            y = y_top + y_loc
+            I = (hi_e ** 3 / 36.0) * (b1**2 + 4.0*b1*b2 + b2**2) / (b1 + b2)
+ 
+        A_list.append(A);  y_list.append(y);  I_list.append(I)
+ 
+    return A_list, y_list, I_list
+ 
+ 
+def _inertie_beton_fissure(zones, hc):
+    """
+    Intègre l'aire et le moment statique de la partie comprimée (y ≤ hc).
+ 
+    zones : liste de (y_bas, y_haut, b_bas, b_haut) de bas en haut
+    hc    : hauteur de la zone comprimée (depuis la fibre inférieure)
+    """
+    S_fiss  = 0.0
+    MS_fiss = 0.0
+ 
+    for y1, y2, b_bot, b_top in zones:
+        y_end = min(y2, hc)
+        if y_end <= y1:
+            continue                    # zone entièrement tendue
+ 
+        h_z   = y2 - y1
+        h_eff = y_end - y1             # hauteur comprimée dans ce segment
+ 
+        # Largeurs aux bornes de la partie comprimée
+        b_bas  = b_bot + (b_top - b_bot) * (y1   - y1) / h_z if h_z > 0 else b_bot
+        b_haut = b_bot + (b_top - b_bot) * (h_eff      ) / h_z if h_z > 0 else b_top
+ 
+        area_z = h_eff * (b_bas + b_haut) / 2.0
+        if (b_bas + b_haut) > 0:
+            v_loc = (h_eff / 3.0) * (b_bas + 2.0 * b_haut) / (b_bas + b_haut)
+        else:
+            v_loc = h_eff / 2.0
+ 
+        S_fiss  += area_z
+        MS_fiss += area_z * (y1 + v_loc)
+ 
+    return S_fiss, MS_fiss
+ 
+ 
+@func
+def inerties_section_I(b, h, bs, hs, gs, bi, hi, gi,
+                        asup, ainf, esup, einf,
+                        n, M, N, beta, hc):
+    """
+    Calcule les caractéristiques mécaniques de la section en I.
+ 
+    Retourne un dictionnaire avec :
+      Section brute        : S_B, v_B, I_B
+      Section homogénéisée : S_H, v_H, I_H
+      Section fissurée     : S_F, v_F, I_F
+    """
+    h_web = h - hs - gs - gi - hi   # hauteur de l'âme
+ 
+    # ── Description des éléments ──────────────────────────────────────────
+    #    (type, b_haut, b_bas, hauteur, y_sommet)
+    elems = [
+        ("rect", bs,  None, hs,    0            ),  # table supérieure
+        ("trap", bs,  b,    gs,    hs           ),  # congé supérieur
+        ("rect", b,   None, h_web, hs + gs      ),  # âme
+        ("trap", b,   bi,   gi,    hs+gs+h_web  ),  # congé inférieur
+        ("rect", bi,  None, hi,    h - hi       ),  # table inférieure
+    ]
+ 
+    # ── Section brute ─────────────────────────────────────────────────────
+    A_list, y_list, I_list = _elem_brute(elems)
+ 
+    S_B = sum(A_list)
+    v_B = sum(A * y for A, y in zip(A_list, y_list)) / S_B
+    I_B = sum(I + A * (y - v_B)**2
+              for I, A, y in zip(I_list, A_list, y_list))
+ 
+    # ── Section homogénéisée ──────────────────────────────────────────────
+    d_sup   = esup              # ordonnée acier sup / fibre inf
+    d_inf   = h - einf          # ordonnée acier inf / fibre inf
+    A_s_sup = n * asup  / 1e4
+    A_s_inf = n * ainf  / 1e4
+ 
+    S_H = S_B + A_s_sup + A_s_inf
+    v_H = (
+        sum(A * y for A, y in zip(A_list, y_list)) +
+        A_s_sup * d_sup + A_s_inf * d_inf
+    ) / S_H
+ 
+    I_H = (
+        sum(I + A * (y - v_H)**2 for I, A, y in zip(I_list, A_list, y_list)) +
+        A_s_sup * (d_sup - v_H)**2 +
+        A_s_inf * (d_inf - v_H)**2
+    )
+ 
+    # ── Section fissurée ──────────────────────────────────────────────────
+    #    zones : (y_bas, y_haut, b_à_y_bas, b_à_y_haut)  de bas en haut
+    zones = [
+        (0,               hs,              bs, bs),
+        (hs,              hs + gs,         bs, b ),
+        (hs + gs,         hs+gs+h_web,     b,  b ),
+        (hs+gs+h_web,     h - hi,          b,  bi),
+        (h - hi,          h,               bi, bi),
+    ]
+ 
+    S_beton, MS_beton = _inertie_beton_fissure(zones, hc)
+ 
+    S_F = S_beton + A_s_sup + A_s_inf
+    v_F = (MS_beton + A_s_sup * d_sup + A_s_inf * d_inf) / S_F if S_F > 0 else 0.0
+ 
+    # Inertie fissurée déduite de la courbure
+    I_F = abs((M + N * (v_F - v_B)) / (_ES / n) / (beta / 1000.0))
+ 
+    # Si la section est entièrement comprimée → on utilise I homogénéisée
+    if hc >= h:
+        S_F, v_F, I_F = S_H, v_H, I_H
+ 
+    return {
+        "S_B": S_B, "v_B": v_B, "I_B": I_B,
+        "S_H": S_H, "v_H": v_H, "I_H": I_H,
+        "S_F": S_F, "v_F": v_F, "I_F": I_F,
+    }
+ 
+ 
+@func
+def e_inerties_section_I(b, h, bs, hs, gs, bi, hi, gi,
+                          asup, ainf, esup, einf,
+                          n, M, N, beta, hc, resultats):
+    """
+    Retourne une liste de caractéristiques sélectionnées (pour Excel).
+    Si M < 0, la section est retournée (symétrie).
+    """
+    if M > 0:
+        tout = inerties_section_I(b, h, bs, hs, gs, bi, hi, gi,
+                                   asup, ainf, esup, einf,
+                                   n, M, N, beta, hc)
+    else:
+        # Section retournée : on permute tables sup/inf et aciers
+        tout = inerties_section_I(b, h, bi, hi, gi, bs, hs, gs,
+                                   ainf, asup, einf, esup,
+                                   n, -M, N, beta, hc)
+ 
+    return [tout[r] for r in resultats.split(',')]
