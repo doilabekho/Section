@@ -1686,19 +1686,13 @@ def solve_GG_ELU_pararect(
             n, NQP, MYQP, MZQP, roh, ep[0], ep[1], ep[2])
         return np.array([N, My, Mz]) - targets
 
-    for solver_fn in (
-        lambda: fsolve(resid, x0, full_output=True)[0],
-        lambda: root(resid, x0, method='hybr', tol=1e-6).x,
-        lambda: root(resid, x0, method='lm').x,
-    ):
-        try:
-            x = solver_fn()
-            if np.max(np.abs(resid(x))) < 1e-3:
-                return x
-        except Exception:
-            pass
 
-    return root(resid, x0, method='lm').x
+    from scipy.optimize import least_squares
+    
+    least_squares(resid, x0, loss='soft_l1')
+
+
+    return least_squares(resid, x0, loss='soft_l1')
 
 
 
