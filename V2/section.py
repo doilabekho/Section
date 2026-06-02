@@ -618,11 +618,7 @@ def _contrib_ELU_P(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2, n=2.0):
             I0 = (W2**(p+1) - W1**(p+1)) / (dW * (p+1))
             I1 = (W2**(p+2) - W1**(p+2)) / (dW**2 * (p+2)) - (W1/dW) * I0
             return I0, I1
-            else:
-                # Primitives exactes si dW est suffisant
-                I0 = (W2**(p+1) - W1**(p+1)) / (dW * (p+1))
-                I1 = (W2**(p+2) - W1**(p+2)) / (dW**2 * (p+2)) - (W1 / dW) * I0
-                return I0, I1
+
 
     # 3. Cas particulier : Déformation uniforme sur toute la section (Compression pure)
     if abs(alpha) < 1e-12 and abs(beta) < 1e-12:
