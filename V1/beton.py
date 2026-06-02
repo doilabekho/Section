@@ -145,12 +145,12 @@ def epsilon_c_pararect(fck, fcd, sig_c_array):
 @func
 def sigma_c_n1(eps_c, n):
     """Béton fissuré ELS — loi linéaire, traction = 0."""
-    return np.maximum(0.0, (_ES/n) * np.asarray(eps_c, float) / 1000.0)
+    return np.maximum(0.0, (200000/n) * np.asarray(eps_c, float) / 1000.0)
 
 @func
 def sigma_c_n2(eps_c, n):
     """Béton fissuré ELS — loi linéaire, sans fissurée"""
-    return (_ES/n) * np.asarray(eps_c, float) / 1000.0
+    return (200000/n) * np.asarray(eps_c, float) / 1000.0
 
 
 @func
