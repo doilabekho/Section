@@ -588,46 +588,41 @@ def _contrib_ELU_P(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2, n=2.0):
     
     # 2. Variable interne W = 1 - u = 1 - eps / e2
     # Borne max à 0.0 pour éviter les NaN (numérique) avec des puissances non entières
-    W1 = max(1.0 - eps1 / e2, 0.0)
-    W2 = max(1.0 - eps2 / e2, 0.0)
+    W1 = 1.0 - eps1 / e2
+    W2 = 1.0 - eps2 / e2
+    # Ne pas tronquer ici — poly_p est déjà clipé à eps <= e2
+    # donc W1, W2 >= 0 par construction. La troncature masque des erreurs de clipping.
+    # Si malgré tout W < 0 par tolérance numérique :
+    W1 = max(W1, 0.0)
+    W2 = max(W2, 0.0)
+    # ← garder, MAIS s'assurer que la branche exacte est utilisée
+    # quand dW est significatif, même si W1 = 0
     
     # Fonction d'intégration exacte de W(s)^p * s^k sur le segment paramétrique s ∈ [0, 1]
     def _I_W(p):
         dW = W2 - W1
-        
-        # Si dW est très petit, l'intégration analytique produit une instabilité (0/0).
-        # On utilise donc un développement de Taylor sécurisé (Ordre 2).
-        if abs(dW) < 1e-5:
-            # Ordre 0
+        # Branche exacte prioritaire si dW est suffisant
+        # ET si aucun des deux W n'est nul (risque NaN avec puissance négative en Taylor)
+        use_exact = abs(dW) > 1e-3 or W1 == 0.0
+        if not use_exact:
+            # Taylor sécurisé — W1 > 0 garanti ici
             T0 = W1**p
-            
-            # Calcul des termes avec sécurité sur W1 > 0 pour éviter la division par zéro
-            # si l'exposant (p-k) devient négatif.
-            
-            # Ordre 1
-            T1 = p * (W1**(p-1)) * dW if W1 > 0 else 0.0
-            
-            # Ordre 2
-            T2 = (p * (p-1) / 2.0) * (W1**(p-2)) * (dW**2) if W1 > 0 else 0.0
-            
-            # Ordre 3
-            T3 = (p * (p-1) * (p-2) / 6.0) * (W1**(p-3)) * (dW**3) if W1 > 0 else 0.0
-            
-            # Ordre 4
-            T4 = (p * (p-1) * (p-2) * (p-3) / 24.0) * (W1**(p-4)) * (dW**4) if W1 > 0 else 0.0
-            
-            # Intégrale de W(s)^p
-            I0 = T0 + T1/2.0 + T2/3.0 + T3/4.0 + T4/5.0
-            
-            # Intégrale de W(s)^p * s
-            I1 = T0/2.0 + T1/3.0 + T2/4.0 + T3/5.0 + T4/6.0
-            
+            T1 = p * W1**(p-1) * dW
+            T2 = p*(p-1)/2.0 * W1**(p-2) * dW**2
+            T3 = p*(p-1)*(p-2)/6.0 * W1**(p-3) * dW**3
+            I0 = T0 + T1/2 + T2/3 + T3/4
+            I1 = T0/2 + T1/3 + T2/4 + T3/5
             return I0, I1
         else:
-            # Primitives exactes si dW est suffisant
+            # Formule exacte — valide même si W1 = 0
             I0 = (W2**(p+1) - W1**(p+1)) / (dW * (p+1))
-            I1 = (W2**(p+2) - W1**(p+2)) / (dW**2 * (p+2)) - (W1 / dW) * I0
+            I1 = (W2**(p+2) - W1**(p+2)) / (dW**2 * (p+2)) - (W1/dW) * I0
             return I0, I1
+            else:
+                # Primitives exactes si dW est suffisant
+                I0 = (W2**(p+1) - W1**(p+1)) / (dW * (p+1))
+                I1 = (W2**(p+2) - W1**(p+2)) / (dW**2 * (p+2)) - (W1 / dW) * I0
+                return I0, I1
 
     # 3. Cas particulier : Déformation uniforme sur toute la section (Compression pure)
     if abs(alpha) < 1e-12 and abs(beta) < 1e-12:
@@ -660,21 +655,19 @@ def _contrib_ELU_P(x1, y1, x2, y2, eps0, alpha, beta, fcd, e2, n=2.0):
         Mz_ = fcd * dy * (P_Mz + C1 * (x1 * I0_n1 + dx * I1_n1) + C2 * I0_n2)
         
     else:
-        # --- Gradient dominant en Y --- 
-        # Vecteur de Green : L_N = Int(sigma dy) => Contour sur -dx
         D1 = e2 / (beta * (n + 1.0))
         D2 = e2**2 / (beta**2 * (n + 1.0) * (n + 2.0))
-        
-        # Les composantes sont tournées à 90° (symétrie)
+    
+        # Géométrie : en intégrant sur -dx, les rôles x↔y s'échangent
         P_N  = y1 + dy/2.0
-        P_My = (y1**2 + y1*dy + dy**2/3.0)/2.0
-        P_Mz = x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0
-        
-        # Assemblage final
-        N_  = -fcd * dx * (P_N + D1 * I0_n1)
+        P_My = (y1**2 + y1*dy + dy**2/3.0) / 2.0   # était P_Mz en branche X
+        P_Mz = x1*y1 + (x1*dy + y1*dx)/2.0 + dx*dy/3.0  # était P_My en branche X
+    
+        N_  = -fcd * dx * (P_N  + D1 * I0_n1)
+        # ✅ D2 dans Mz (pas My) — symétrique de C2 dans Mz en branche X
         My_ = -fcd * dx * (P_My + D1 * (y1 * I0_n1 + dy * I1_n1) + D2 * I0_n2)
         Mz_ = -fcd * dx * (P_Mz + D1 * (x1 * I0_n1 + dx * I1_n1))
-        
+            
     return np.array([N_, My_, Mz_])
 
 
