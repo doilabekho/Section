@@ -1555,7 +1555,8 @@ def calculer_N_My_Mz_ELU_pararect(
     eps_p0 = _eps_cable_etat_zero(eps_i, alpha_i, beta_i, x_p, y_p, sig_p, n, Ep, Cx, Cy)
 
     # ── Béton ELU — loi parabole-rectangle ───────────────────────────────
-    n = float(eps_n(fck))
+    
+    #n = float(eps_n(fck))
     e2 = float(eps_c2(fck))
 
     res_c = _integrer_polygone(contour_cg, eps0, alpha, beta,
@@ -1567,6 +1568,7 @@ def calculer_N_My_Mz_ELU_pararect(
                                         'ELU',fck=fck, fcd=fcd, e2=e2)
 
     Nc, Mc_y, Mc_z = (res_c - res_v)[:3]
+         
 
     # ── Aciers passifs ELU — loi palier ──────────────────────────────────
     if p_acier is None or len(p_acier) == 0:
