@@ -42,6 +42,13 @@ def eps_cu2(fck):
         eps = 2.6 + 35 * ((90 - fck) / 100) ** 4
 
     return eps
+
+@func
+def eps_c3(fck):
+    """Déformation ε_c3 (‰) — loi rectangulaire simplifiée."""
+    fck = np.asarray(fck, float)
+    return np.where(fck <= 50, 1.75, 1.75 + 0.55 * (fck - 50) / 40)
+
 @func    
 def eps_n(fck_array):
     """Renvoie le coefficient n selon tableau 3.1 de NF EN 1992-1-1"""
