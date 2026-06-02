@@ -1177,7 +1177,7 @@ def solve_GG_ELU_pararect(polygon1, evi, p_acier, s_acier,
         xtol=1e-8,
         ftol=1e-8,
         gtol=1e-8,
-        max_nfev=200
+        max_nfev=1000
     )
 
     # ✅ 4. fallback si échec
@@ -1187,7 +1187,7 @@ def solve_GG_ELU_pararect(polygon1, evi, p_acier, s_acier,
             x0,
             method='dogbox',
             loss='soft_l1',
-            max_nfev=500
+            max_nfev=1000
         )
 
     return sol.x
