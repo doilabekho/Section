@@ -46,6 +46,10 @@ from xlwings         import func
 _ES = 200_000.0   # MPa
 
 
+from beton import *   # ← fonctionne en local et sur GitHub
+from acier import *   # ← fonctionne en local et sur GitHub	
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # HELPERS INTERNES — intégration et données acier
 # ════════════════════════════════════════════════════════════════════════════
@@ -430,46 +434,6 @@ def polygone_integrate(f, vertices, tol=1e-9, rtol=1e-9, max_depth=4):
             if tot is None: tot = np.zeros_like(r)
             tot += r
     return tot if tot is not None else 0.0
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# LOIS DE COMPORTEMENT
-# ════════════════════════════════════════════════════════════════════════════
-
-@func
-def eps_c2(fck):
-    fck = np.asarray(fck, float)
-    return np.where(fck <= 50, 2.0, 2.0 + 0.085*(fck-50)**0.53)
-
-@func
-def eps_cu2(fck):
-    fck = np.asarray(fck, float)
-    return np.where(fck <= 50, 3.5, 2.6 + 35*((90-fck)/100)**4)
-
-@func
-def eps_n(fck):
-    fck = np.asarray(fck, float)
-    return np.where(fck <= 50, 2.0, 1.4 + 23.4*((90-fck)/100)**4)
-
-@func
-def sigma_c_n1(eps_c, n):
-    """Béton fissuré ELS — loi linéaire, traction = 0."""
-    return np.maximum(0.0, (_ES/n) * np.asarray(eps_c, float) / 1000.0)
-
-@func
-def sigma_c_n2(eps_c, n):
-    """Béton fissuré ELS — loi linéaire, sans fissurée"""
-    return (_ES/n) * np.asarray(eps_c, float) / 1000.0
-
-
-@func
-def sigma_c_pararect1(fck, fcd, eps_c):
-    """Parabole-rectangle EC2 — formulation continue (sans np.where)."""
-    eps = np.asarray(eps_c, float)
-    e2, n = eps_c2(fck), eps_n(fck)
-    t  = np.abs(1.0 - eps/e2)
-    mask = (eps + np.abs(eps)) / (2.0*np.abs(eps) + 1e-30)
-    return np.minimum(fcd*(1.0 - t**n)*mask, fcd*mask)
 
 
 @func
