@@ -968,20 +968,18 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
                 res_r[:3] += _contrib_ELU_R(xa, ya, xb, yb, fcd)
 
         # ✅ zone parabole (reste)
+        # ❌ Extrait de ton code initial pour la zone parabole :
         res_p = np.zeros(4)
-        edges = np.column_stack([poly_c, np.roll(poly_c, -1, axis=0)])
-
+        edges = np.column_stack([poly_c, np.roll(poly_c, -1, axis=0)]) # <--- Boucle sur le contour global !
+        
         for xa, ya, xb, yb in edges:
-
             xm = 0.5*(xa+xb)
             ym = 0.5*(ya+yb)
-            if eps0 + alpha*xm + beta*ym <= e2:
-
+            if eps0 + alpha*xm + beta*ym <= e2: # <--- Simple filtre au milieu
                 dx = xb - xa
                 dy = yb - ya
                 res_p[3] += dy * (xa + dx/2)
-                res_p[:3] += _contrib_ELU_P(xa, ya, xb, yb,
-                                            eps0, alpha, beta, fcd, e2, n=n)
+                res_p[:3] += _contrib_ELU_P(xa, ya, xb, yb, eps0, alpha, beta, fcd, e2, n=n)
 
         return res_p + res_r
 
