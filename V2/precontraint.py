@@ -987,20 +987,7 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
 
         return res
 
-    else:
-        n= eps_n(fck)
-        # ✅ zone rectangle
-        poly_r = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=True)
 
-        # ✅ zone parabole = poly_c - poly_r
-        res_r = np.zeros(4)
-        if len(poly_r) >= 3:
-            edges = np.column_stack([poly_r, np.roll(poly_r, -1, axis=0)])
-            for xa, ya, xb, yb in edges:
-                dx = xb - xa
-                dy = yb - ya
-                res_r[3] += dy * (xa + dx/2)
-                res_r[:3] += _contrib_ELU_R(xa, ya, xb, yb, fcd)
 
     else:
         n= eps_n(fck)
