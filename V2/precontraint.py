@@ -989,6 +989,21 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
+
     else:
         n= eps_n(fck)
         # ✅ zone rectangle
