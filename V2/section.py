@@ -838,48 +838,83 @@ def _couper_poly_par_plan(poly, eps0, alpha, beta, valeur_seuil):
 # =============================================================================
 # MOTEUR D'INTÉGRATION PRINCIPAL
 # =============================================================================
-def clip_polygon_eps(vertices, eps0, alpha, beta, seuil):
+def clip_polygon_eps(vertices, eps0, alpha, beta, seuil, keep_above=True, tol=1e-12):
     """
-    Coupe un polygone par le demi-plan :
-    eps(x,y) >= seuil
+    Coupe un polygone par un demi-plan défini par :
+        eps(x,y) >= seuil   (si keep_above=True)
+        eps(x,y) <= seuil   (si keep_above=False)
+
+    Paramètres
+    ----------
+    vertices : array-like (N,2)
+        Sommets du polygone (ordre quelconque mais fermé implicitement)
+    eps0, alpha, beta : float
+        Champ affine eps(x,y) = eps0 + alpha*x + beta*y
+    seuil : float
+        Valeur seuil
+    keep_above : bool
+        True  -> garde eps >= seuil
+        False -> garde eps <= seuil
+    tol : float
+        Tolérance numérique
+
+    Retour
+    ------
+    np.ndarray (M,2)
+        Polygone clipé
     """
 
-    def eps(x,y):
+    def eps(x, y):
         return eps0 + alpha*x + beta*y
 
+    def is_inside(e):
+        if keep_above:
+            return e >= seuil - tol
+        else:
+            return e <= seuil + tol
+
     output = []
+    vertices = np.asarray(vertices, dtype=float)
     n = len(vertices)
 
     for i in range(n):
-
         x1, y1 = vertices[i]
-        x2, y2 = vertices[(i+1) % n]
+        x2, y2 = vertices[(i + 1) % n]
 
         e1 = eps(x1, y1)
         e2 = eps(x2, y2)
 
-        inside1 = (e1 >= seuil)
-        inside2 = (e2 >= seuil)
+        inside1 = is_inside(e1)
+        inside2 = is_inside(e2)
 
+        # ✅ cas 1 : les deux points dedans
         if inside1 and inside2:
             output.append((x2, y2))
 
+        # ✅ cas 2 : sortie du domaine
         elif inside1 and not inside2:
-            t = (seuil - e1) / (e2 - e1)
-            xi = x1 + t*(x2 - x1)
-            yi = y1 + t*(y2 - y1)
-            output.append((xi, yi))
+            if abs(e2 - e1) > tol:
+                t = (seuil - e1) / (e2 - e1)
+                xi = x1 + t * (x2 - x1)
+                yi = y1 + t * (y2 - y1)
+                output.append((xi, yi))
 
+        # ✅ cas 3 : entrée dans le domaine
         elif not inside1 and inside2:
-            t = (seuil - e1) / (e2 - e1)
-            xi = x1 + t*(x2 - x1)
-            yi = y1 + t*(y2 - y1)
-            output.append((xi, yi))
+            if abs(e2 - e1) > tol:
+                t = (seuil - e1) / (e2 - e1)
+                xi = x1 + t * (x2 - x1)
+                yi = y1 + t * (y2 - y1)
+                output.append((xi, yi))
             output.append((x2, y2))
 
-        # sinon rien
+        # ✅ cas 4 : dehors → rien
+
+    if len(output) == 0:
+        return np.zeros((0, 2))
 
     return np.array(output)
+
 
 def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=None, e2=None):
 
@@ -906,10 +941,12 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
 
         return res
 
+
+
     else:
         n= eps_n(fck)
         # ✅ zone rectangle
-        poly_r = clip_polygon_eps(poly_c, eps0, alpha, beta, e2)
+        poly_r = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=True)
 
         # ✅ zone parabole = poly_c - poly_r
         res_r = np.zeros(4)
@@ -922,8 +959,11 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
                 res_r[:3] += _contrib_ELU_R(xa, ya, xb, yb, fcd)
 
         # ✅ zone parabole (reste)
+        poly_p = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=False)
         res_p = np.zeros(4)
-        edges = np.column_stack([poly_c, np.roll(poly_c, -1, axis=0)])
+        if len(poly_p) < 3:
+            return res_r
+        edges = np.column_stack([poly_p, np.roll(poly_p, -1, axis=0)])
 
         for xa, ya, xb, yb in edges:
 
@@ -937,8 +977,8 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
                 res_p[:3] += _contrib_ELU_P(xa, ya, xb, yb,
                                             eps0, alpha, beta, fcd, e2, n=n)
 
-        return res_p + res_r
 
+        return res_p + res_r
 
 
 
