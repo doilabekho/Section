@@ -1158,7 +1158,7 @@ def solve_GG_ELU_pararect(polygon1, evi, p_acier, s_acier,
     from scipy.optimize import least_squares
 
     targets = np.array([Nobj, Myobj, Mzobj], float)
-    def residuals(eps):
+    def resid(eps):
         N, My, Mz = calculer_N_My_Mz_ELU_pararect(
             polygon1, evi, p_acier, s_acier,
             a_com, fck, fcd, fyd, k, eps_uk, eps_ud, *eps)
