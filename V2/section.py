@@ -933,9 +933,18 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
 
 
     else:
-        n= eps_n(fck)
-        # ✅ zone rectangle
+        n   = eps_n(fck)
+        ecu2 = eps_cu2(fck)  # ← ajouter
+
+        # Borner la zone comprimée à ecu2
+        poly_c = clip_polygon_eps(poly_c, eps0, alpha, beta, ecu2, keep_above=False)
+
+        if len(poly_c) < 3:
+            return np.zeros(4)
+
+       
         poly_r = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=True)
+        poly_p = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=False)
 
         # ✅ zone parabole = poly_c - poly_r
         res_r = np.zeros(4)
@@ -948,7 +957,7 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
                 res_r[:3] += _contrib_ELU_R(xa, ya, xb, yb, fcd)
 
         # ✅ zone parabole (reste)
-        poly_p = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=False)
+
         res_p = np.zeros(4)
         if len(poly_p) < 3:
             return res_r
