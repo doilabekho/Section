@@ -998,7 +998,7 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
                 dy = yb - ya
                 res_p[3] += dy * (xa + dx/2)
                 res_p[:3] += _contrib_ELU_P(xa, ya, xb, yb,
-                                            eps0, alpha, beta, fcd, e2, n=n)
+                                            eps0, alpha, beta, fcd, e2)
 
 
         return res_p + res_r
