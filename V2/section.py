@@ -909,44 +909,37 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
 
     pts = _orienter_polygone_ccw(np.asarray(contour, float))
 
-    # ✅ zone comprimée
-    poly_c = clip_polygon_eps(pts, eps0, alpha, beta, 0.0)
-    
+    poly_c = clip_polygon_eps(pts, eps0, alpha, beta, 0.0, keep_above=True)
+
     if len(poly_c) < 3:
         return np.zeros(4)
 
-    res = np.zeros(4)
-
     if mode == 'ELS':
-
         edges = np.column_stack([poly_c, np.roll(poly_c, -1, axis=0)])
-
         for xa, ya, xb, yb in edges:
             dx = xb - xa
             dy = yb - ya
-
+            res = np.zeros(4)
             res[3] += dy * (xa + dx/2)
             res[:3] += _contrib_ELS(xa, ya, xb, yb, eps0, alpha, beta, C)
-
         return res
 
-
-
     else:
-        n   = eps_n(fck)
-        ecu2 = eps_cu2(fck)  # ← ajouter
+        n    = eps_n(fck)
+        ecu2 = eps_cu2(fck)
 
-        # Borner la zone comprimée à ecu2
+        # Borner la zone comprimée entre 0 et ecu2
         poly_c = clip_polygon_eps(poly_c, eps0, alpha, beta, ecu2, keep_above=False)
 
         if len(poly_c) < 3:
             return np.zeros(4)
 
-       
+        # Zone rectangle : e2 <= eps <= ecu2
         poly_r = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=True)
+
+        # Zone parabole : 0 <= eps <= e2
         poly_p = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=False)
 
-        # ✅ zone parabole = poly_c - poly_r
         res_r = np.zeros(4)
         if len(poly_r) >= 3:
             edges = np.column_stack([poly_r, np.roll(poly_r, -1, axis=0)])
@@ -956,25 +949,15 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
                 res_r[3] += dy * (xa + dx/2)
                 res_r[:3] += _contrib_ELU_R(xa, ya, xb, yb, fcd)
 
-        # ✅ zone parabole (reste)
-
         res_p = np.zeros(4)
-        if len(poly_p) < 3:
-            return res_r
-        edges = np.column_stack([poly_p, np.roll(poly_p, -1, axis=0)])
-
-        for xa, ya, xb, yb in edges:
-
-            xm = 0.5*(xa+xb)
-            ym = 0.5*(ya+yb)
-            if eps0 + alpha*xm + beta*ym <= e2:
-
+        if len(poly_p) >= 3:
+            edges = np.column_stack([poly_p, np.roll(poly_p, -1, axis=0)])
+            for xa, ya, xb, yb in edges:
                 dx = xb - xa
                 dy = yb - ya
                 res_p[3] += dy * (xa + dx/2)
                 res_p[:3] += _contrib_ELU_P(xa, ya, xb, yb,
                                             eps0, alpha, beta, fcd, e2, n=n)
-
 
         return res_p + res_r
 
