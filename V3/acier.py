@@ -12,6 +12,7 @@ from scipy.optimize import root, fsolve
 from matplotlib.path import Path
 from scipy.spatial import Delaunay
 import matplotlib.pyplot as plt
+
 @func
 def sgn(x):
 	# renvoie signe 1 / -1
