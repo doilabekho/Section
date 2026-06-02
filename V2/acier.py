@@ -117,7 +117,7 @@ def sigma_s_lin1(eps_s, a_com):
     
     # On multiplie par a_com uniquement là où eps_s > 0
     return np.where(eps > 0.0, sig_base * a_com, sig_base)
-n = float(eps_n(fck))
+	n = float(eps_n(fck))
     e2 = float(eps_c2(fck))
 
     res_c = _integrer_polygone(contour_cg, eps0, alpha, beta,
