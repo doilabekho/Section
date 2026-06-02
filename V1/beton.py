@@ -142,23 +142,15 @@ def epsilon_c_pararect(fck, fcd, sig_c_array):
     
     return resultat
 @func
+@func
 def sigma_c_n1(eps_c, n):
-    """
-    Loi béton fissuré. 
-    Utilise une fonction de transfert pour annuler la traction sans np.where.
-    """
-    eps = np.asarray(eps_c)
-    eps_abs = np.abs(eps)
-    
-    # Le terme (eps + eps_abs) / (2 * eps_abs + 1e-15) agit comme un filtre :
-    # Si eps > 0  => (eps + eps) / (2 * eps) = 1
-    # Si eps < 0  => (eps - eps) / (2 * eps) = 0
-    # Le 1e-15 est le "garde-fou" contre la division par zéro.
-    
-    filtre = (eps + eps_abs) / (2 * eps_abs + 1e-30)
-    sigma = (200000 / n * eps / 1000) * filtre
-    return sigma
+    """Béton fissuré ELS — loi linéaire, traction = 0."""
+    return np.maximum(0.0, (_ES/n) * np.asarray(eps_c, float) / 1000.0)
 
+@func
+def sigma_c_n2(eps_c, n):
+    """Béton fissuré ELS — loi linéaire, sans fissurée"""
+    return (_ES/n) * np.asarray(eps_c, float) / 1000.0
 
 
 @func
