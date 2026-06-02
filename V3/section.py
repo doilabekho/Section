@@ -939,7 +939,7 @@ def clip_polygon_eps(vertices, eps0, alpha, beta, seuil, keep_above=True, tol=1e
     return np.array(output)
 
 
-def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=None, e2=None):
+def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fcd=None, e2=None):
 
     pts = _orienter_polygone_ccw(np.asarray(contour, float))
 
@@ -967,7 +967,7 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
 
 
     else:
-        n= eps_n(fck)
+       
         # ✅ zone rectangle
         poly_r = clip_polygon_eps(poly_c, eps0, alpha, beta, e2, keep_above=True)
 
