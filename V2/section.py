@@ -1160,10 +1160,10 @@ def solve_GG_ELU_pararect(polygon1, evi, p_acier, s_acier,
     #result = root(residuals, x0, method='df-sane',
     #          tol=1e-6, options={'maxfev': 2000, 'fatol': 1e-6})
     #from scipy.optimize import fsolve
-    sol = fsolve(residuals, x0, xtol=1e-6)
-    #result = root(residuals, x0, method='krylov',
-    #          tol=1e-5, options={'maxiter': 200})
-    return sol #result.x
+    #sol = fsolve(residuals, x0, xtol=1e-6)
+    result = root(residuals, x0, method='krylov',
+              tol=1e-5, options={'maxiter': 800})
+    return result.x
 
 
 
