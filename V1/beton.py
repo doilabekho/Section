@@ -141,7 +141,7 @@ def epsilon_c_pararect(fck, fcd, sig_c_array):
     resultat = np.select([sig <= 0, sig >= fcd], [0.0, e2], default=epsilon)
     
     return resultat
-@func
+
 @func
 def sigma_c_n1(eps_c, n):
     """Béton fissuré ELS — loi linéaire, traction = 0."""
