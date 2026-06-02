@@ -1,4 +1,5 @@
 # Module pour les propriétés et calculs de l'acier
+# Module pour les propriétés et calculs de l'acier
 import datetime as dt
 import numpy as np
 import pandas as pd
@@ -78,19 +79,7 @@ def eps_s_palier(fyd, k, eps_uk, eps_ud, sig_s_array):
     # On renvoie 0.0 par défaut si sigma est hors limites
     return np.select(conditions, choix, default=0.0)
 	
-@func
-def sigma_s_lin(eps_s_array):
-    """
-    Version vectorisée de la loi acier linéaire infinie.
-    E = 200 000 MPa (pas de palier plastique).
-    eps_s_array : déformation en mm/m.
-    """
-    # On s'assure que l'entrée est un tableau
-    eps = np.asarray(eps_s_array)
-    
-    # sigma = E * epsilon
-    # Le /1000 convertit les mm/m en déformation relative (sans unité)
-    return 200000 * eps / 1000
+
 	
 @func
 def eps_s_lin(sig_s_array):
@@ -117,15 +106,47 @@ def sigma_s_lin1(eps_s, a_com):
     
     # On multiplie par a_com uniquement là où eps_s > 0
     return np.where(eps > 0.0, sig_base * a_com, sig_base)
-	n = float(eps_n(fck))
-    e2 = float(eps_c2(fck))
 
-    res_c = _integrer_polygone(contour_cg, eps0, alpha, beta,
-                               'ELU',fck=fck, fcd=fcd, e2=e2)
-    res_v = np.zeros(4)
-    for trou in evidements_cg:
-        if len(trou) >= 3:
-            res_v += _integrer_polygone(trou, eps0, alpha, beta,
-                                        'ELU',fck=fck, fcd=fcd, e2=e2)
+#lois acier précontraint
 
-    Nc, Mc_y, Mc_z = (res_c - res_v)[:3]
+
+
+
+@func
+def sigma_s_palier_p(fpd, Ep, kp, eps_uk, eps_ud, eps_s):
+    """Loi acier actif — palier incliné (Guide Setra EC2)."""
+    eps_s  = np.asarray(eps_s, float)
+    eps_sd = fpd/Ep*1000.0; abs_e = np.abs(eps_s)
+    pente  = (kp*fpd-fpd)/(eps_uk-eps_sd)
+    return np.where(abs_e <= eps_sd,
+                    Ep*eps_s/1000.0,
+                    np.sign(eps_s)*(fpd+pente*(abs_e-eps_sd)))
+
+@func
+def sigma_s_palier_p1(fpd, Ep, kp, eps_uk, eps_ud, eps_s, a_com):
+    eps_s = np.asarray(eps_s, float)
+    sig   = sigma_s_palier_p(fpd, Ep, kp, eps_uk, eps_ud, eps_s)
+    return np.where(eps_s > 0.0, sig*a_com, sig)
+
+@func
+def eps_s_palier_p(fpd, Ep, kp, eps_uk, eps_ud, sig_s):
+    """Déformation câble à partir de la contrainte."""
+    sig    = np.asarray(sig_s, float)
+    eps_sd = fpd/Ep*1000.0
+    e1     = sig*1000.0/Ep
+    e2     = np.sign(sig)*(eps_sd+(np.abs(sig)-fpd)*(eps_uk-eps_sd)/(kp*fpd-fpd))
+    return np.where(np.abs(sig) <= fpd, e1, e2)
+
+@func
+def sigma_s_lin_p(Ep, eps_s):
+    return Ep * np.asarray(eps_s, float) / 1000.0
+
+@func
+def sigma_s_lin1_p(Ep, eps_s, a_com):
+    eps = np.asarray(eps_s, float)
+    sig = Ep*eps/1000.0
+    return np.where(eps > 0.0, sig*a_com, sig)
+
+@func
+def eps_s_lin_p(Ep, sig_s):
+    return 1000.0 * np.asarray(sig_s, float) / Ep
