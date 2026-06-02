@@ -1678,21 +1678,45 @@ def solve_GG_ELU_pararect(
     targets = np.array([Nobj, Myobj, Mzobj], float)
     x0      = np.array([0.5, 0.0, 1e-4], float)
 
+    
+    # ✅ 2. résidu normalisé
     def resid(ep):
         N, My, Mz = calculer_N_My_Mz_ELU_pararect(
             polygon1, evi, p_acier, s_acier, a_com,
             fck, fcd, fyd, k, eps_uk, eps_ud,
             p_pre, s_pre, sig_p, fpd, Ep, kp, eps_ukp, eps_udp,
-            n, NQP, MYQP, MZQP, roh, ep[0], ep[1], ep[2])
-        return np.array([N, My, Mz]) - targets
+            n, NQP, MYQP, MZQP, roh,
+            ep[0], ep[1], ep[2])
 
+        r = np.array([N - Nobj, My - Myobj, Mz - Mzobj])
 
-    from scipy.optimize import least_squares
-    
-    least_squares(resid, x0, loss='soft_l1')
+        scale = np.maximum(np.abs(targets), 1.0)
+        return r / scale
 
+    # ✅ 3. solveur robuste
+    sol = least_squares(
+        resid,
+        x0,
+        method='trf',        # robuste
+        loss='soft_l1',      # robuste aux discontinuités
+        xtol=1e-8,
+        ftol=1e-8,
+        gtol=1e-8,
+        max_nfev=200
+    )
 
-    return least_squares(resid, x0, loss='soft_l1')
+    # ✅ 4. fallback si échec
+    if not sol.success:
+        sol = least_squares(
+            resid,
+            x0,
+            method='dogbox',
+            loss='soft_l1',
+            max_nfev=500
+        )
+
+    return sol.x
+
 
 
 
