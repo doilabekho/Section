@@ -1155,42 +1155,21 @@ def solve_GG_ELU_pararect(polygon1, evi, p_acier, s_acier,
                            a_com, fck, fcd, fyd, k, eps_uk, eps_ud,
                            Nobj, Myobj, Mzobj):
     x0 = np.array([0.0, 0.1, 0.0])
-    from scipy.optimize import least_squares
-
-    targets = np.array([Nobj, Myobj, Mzobj], float)
-    
-    def resid(eps):
+    def residuals(eps):
         N, My, Mz = calculer_N_My_Mz_ELU_pararect(
             polygon1, evi, p_acier, s_acier,
             a_com, fck, fcd, fyd, k, eps_uk, eps_ud, *eps)
-        r = np.array([N - Nobj, My - Myobj, Mz - Mzobj])
+        return np.array([N-Nobj, My-Myobj, Mz-Mzobj])
+    def jacobian(eps, h=1e-6):
+        J = np.empty((3,3)); r0 = residuals(eps)
+        for i in range(3):
+            dh = np.zeros(3); dh[i] = h
+            J[:,i] = (residuals(eps+dh) - r0) / h
+        return J
+    result = root(residuals, x0, jac=jacobian, method='hybr',
+                  tol=1e-6, options={'maxfev': 1000})
+    return result.x
 
-        scale = np.maximum(np.abs(targets), 1.0)
-        return r / scale
-
-    # ✅ 3. solveur robuste
-    sol = least_squares(
-        resid,
-        x0,
-        method='trf',        # robuste
-        loss='soft_l1',      # robuste aux discontinuités
-        xtol=1e-8,
-        ftol=1e-8,
-        gtol=1e-8,
-        max_nfev=1000
-    )
-
-    # ✅ 4. fallback si échec
-    if not sol.success:
-        sol = least_squares(
-            resid,
-            x0,
-            method='dogbox',
-            loss='soft_l1',
-            max_nfev=1000
-        )
-
-    return sol.x
 
 
 
