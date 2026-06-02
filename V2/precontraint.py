@@ -1665,6 +1665,7 @@ def calculer_N_My_Mz_ELU_pararect(
     return (float(Ns +  Nsp + Nc + coef * Niso),
             float(Msy +  Msyp + Mc_y + coef * Myiso),
             float(Msz +   Mszp + Mc_z + coef * Mziso ))
+
 @func
 def solve_GG_ELU_pararect(
         polygon1, evi, p_acier, s_acier, a_com,
@@ -1672,13 +1673,19 @@ def solve_GG_ELU_pararect(
         p_pre, s_pre, sig_p, fpd, Ep, kp, eps_ukp, eps_udp,
         n, NQP, MYQP, MZQP, roh,
         Nobj, Myobj, Mzobj):
-    """
-    Résout (N=Nobj, My=Myobj, Mz=Mzobj) → (ε₀, α, β) — ELU.
-    """
-    targets = np.array([Nobj, Myobj, Mzobj], float)
-    x0      = np.array([0.5, 0.0, 1e-4], float)
 
-    
+    from scipy.optimize import least_squares
+
+    targets = np.array([Nobj, Myobj, Mzobj], float)
+
+    # ✅ 1. excellent point initial = solution QP
+    res_qp = solve_GG_QP(
+        polygon1, evi, p_acier, s_acier, a_com, n,
+        p_pre, s_pre, sig_p, fpd, Ep, kp,
+        eps_ukp, eps_udp, NQP, MYQP, MZQP)
+
+    x0 = np.array(res_qp, dtype=float)
+
     # ✅ 2. résidu normalisé
     def resid(ep):
         N, My, Mz = calculer_N_My_Mz_ELU_pararect(
