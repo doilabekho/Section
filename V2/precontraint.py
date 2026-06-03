@@ -1667,7 +1667,7 @@ def solve_GG_ELU_pararect(
 
     x0 = np.array([0.0, 0.1, 0.0])
 
-    def resid(ep):
+    def residuals(ep):
         N, My, Mz = calculer_N_My_Mz_ELU_pararect(
             polygon1, evi, p_acier, s_acier, a_com,
             fck, fcd, fyd, k, eps_uk, eps_ud,
