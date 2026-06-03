@@ -1231,6 +1231,7 @@ def resultats_GG_ELU_pararect(
     }
 
 
+
 @func
 def e_resultats_GG_ELU_pararect(polygon1, evi, p_acier, s_acier,
                                   a_com, fck, fcd, fyd, k, eps_uk, eps_ud,
