@@ -925,11 +925,12 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
         return np.zeros(4)
 
     if mode == 'ELS':
+        res = np.zeros(4)
         edges = np.column_stack([poly_c, np.roll(poly_c, -1, axis=0)])
         for xa, ya, xb, yb in edges:
             dx = xb - xa
             dy = yb - ya
-            res = np.zeros(4)
+            
             res[3] += dy * (xa + dx/2)
             res[:3] += _contrib_ELS(xa, ya, xb, yb, eps0, alpha, beta, C)
         return res
