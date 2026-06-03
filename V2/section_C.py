@@ -3,6 +3,13 @@ from scipy.optimize import fsolve
 from scipy.special import roots_legendre
 
 # ─────────────────────────────────────────────────────────────
+# STUBS / LOIS DE COMPORTEMENT EUROCODE 2 (Ajoutés pour conformité)
+# ─────────────────────────────────────────────────────────────
+
+from beton import *   # ← fonctionne en local et sur GitHub
+from acier import *   # ← fonctionne en local et sur GitHub	
+
+# ─────────────────────────────────────────────────────────────
 # Utilitaires géométriques
 # ─────────────────────────────────────────────────────────────
 
@@ -13,35 +20,24 @@ def _gauss_legendre(n=48):
 def _calotte(R, d):
     """
     Intégrales analytiques sur la calotte u in [d, R], v in [-h, h]
-    h = sqrt(R² - u²)
-
-    Retourne A, Su, Suu, Svv
-        A   = ∫∫ dA
-        Su  = ∫∫ u dA
-        Suu = ∫∫ u² dA
-        Svv = ∫∫ v² dA
-    Suv = 0 par symétrie (v impair)
-    Sv  = 0 par symétrie
     """
     if d >= R:
         return 0.0, 0.0, 0.0, 0.0
     if d <= -R:
-        # Cercle plein
         A   = np.pi * R**2
         Su  = 0.0
         Suu = np.pi * R**4 / 4.0
         Svv = np.pi * R**4 / 4.0
         return A, Su, Suu, Svv
 
-    # substitution u = R cos(t), t in [0, t_max]
     t_max = np.arccos(np.clip(d / R, -1.0, 1.0))
 
     xi, wi = _gauss_legendre(32)
     t  = 0.5 * t_max * (xi + 1.0)
     w  = 0.5 * t_max * wi
     u  = R * np.cos(t)
-    h  = R * np.sin(t)          # = sqrt(R²-u²)
-    dt = R * np.sin(t)          # |du/dt|
+    h  = R * np.sin(t)          
+    dt = R * np.sin(t)          
 
     A   = np.sum(w * 2.0 * h * dt)
     Su  = np.sum(w * 2.0 * h * u * dt)
@@ -56,17 +52,6 @@ def _calotte(R, d):
 # ─────────────────────────────────────────────────────────────
 
 def _NM_beton_ELS(R, eps0, g, C):
-    """
-    N et M béton en ELS.
-    Repère (u,v) : u = direction gradient, v = perpendiculaire
-    eps(u) = eps0 + g*u,  g = |grad eps|
-
-    σ = C * eps  (loi linéaire)
-
-    N = C * ∫∫ eps dA = C * (eps0*A + g*Su)
-    M = C * ∫∫ eps*u dA = C * (eps0*Su + g*Suu)
-    (moment par rapport à l'axe v, i.e. dans la direction du gradient)
-    """
     d = -eps0 / g
     A, Su, Suu, Svv = _calotte(R, d)
 
@@ -76,54 +61,35 @@ def _NM_beton_ELS(R, eps0, g, C):
 
 
 def NM_circulaire_ELS(R, ra, As_total, n_barres, C, eps0, alpha, beta):
-    """
-    N et M résultants ELS — section circulaire.
-
-    Paramètres
-    ----------
-    R, ra       : rayon béton, rayon acier
-    As_total    : section acier totale
-    n_barres    : nombre de barres
-    C           : module béton effectif (Ec ou Ec/n selon convention)
-    eps0        : déformation au centre
-    alpha, beta : gradient de déformation (eps = eps0 + alpha*x + beta*y)
-
-    Retour
-    ------
-    N, M  (effort normal, moment résultant dans la direction du gradient)
-    """
     g = np.hypot(alpha, beta)
 
     if g < 1e-14:
-        # Flexion nulle — compression/traction pure
         if eps0 < 0:
             return 0.0, 0.0
         A = np.pi * R**2
         N = C * eps0 * A
         M = 0.0
-        # Aciers
+        
+        # CORRECTION 1 : Utilisation de la vraie loi acier à l'ELS au lieu de 'C' béton
         As_i = As_total / n_barres
-        angles = np.linspace(0, 2*np.pi, n_barres, endpoint=False)
-        for a in angles:
-            F  = C * eps0 * As_i
-            N += F
+        sig_s = sigma_s_lin1(eps0, C)
+        N += sig_s * As_total
         return N, M
 
     N_b, M_b = _NM_beton_ELS(R, eps0, g, C)
 
-    # Aciers — projetés sur l'axe u (direction gradient)
     As_i   = As_total / n_barres
     angles = np.linspace(0, 2*np.pi, n_barres, endpoint=False)
     Ns = Ms = 0.0
     for a in angles:
         xs    = ra * np.cos(a)
         ys    = ra * np.sin(a)
-        u_s   = (alpha * xs + beta * ys) / g     # coordonnée u de la barre
+        u_s   = (alpha * xs + beta * ys) / g     
         eps_s = eps0 + g * u_s
         sig_s = sigma_s_lin1(eps_s, C)
         F     = sig_s * As_i
         Ns   += F
-        Ms   += F * u_s                           # moment bras = u_s
+        Ms   += F * u_s                           
 
     return N_b + Ns, M_b + Ms
 
@@ -133,18 +99,12 @@ def NM_circulaire_ELS(R, ra, As_total, n_barres, C, eps0, alpha, beta):
 # ─────────────────────────────────────────────────────────────
 
 def _NM_beton_ELU(R, eps0, g, fcd, fck):
-    """
-    N et M béton en ELU — loi parabole-rectangle.
-    Quadrature Gauss-Legendre sur u, intégrale analytique sur v.
-    """
     e2   = float(eps_c2(fck))
-    ecu2 = float(eps_cu2(fck))
     n    = float(eps_n(fck))
 
     def sigma(eps_val):
-        if eps_val <= 0.0:   return 0.0
-        if eps_val >= ecu2:  return fcd
-        if eps_val >= e2:    return fcd
+        if eps_val <= 0.0:  return 0.0
+        if eps_val >= e2:   return fcd  # Nettoyé et prolongé à l'infini (évite la rupture numérique)
         return fcd * (1.0 - (1.0 - eps_val / e2)**n)
 
     d    = -eps0 / g
@@ -164,10 +124,10 @@ def _NM_beton_ELU(R, eps0, g, fcd, fck):
         h     = np.sqrt(max(R**2 - u**2, 0.0))
         eps_u = eps0 + g * u
         sig_u = sigma(eps_u)
-        chord = 2.0 * h                 # ∫_{-h}^{h} dv
+        chord = 2.0 * h                 
 
         N_b += w * sig_u * chord
-        M_b += w * sig_u * chord * u    # bras de levier = u
+        M_b += w * sig_u * chord * u    
 
     return N_b, M_b
 
@@ -175,32 +135,27 @@ def _NM_beton_ELU(R, eps0, g, fcd, fck):
 def NM_circulaire_ELU(R, ra, As_total, n_barres,
                       fck, fcd, fyd, k, eps_uk, eps_ud, a_com,
                       eps0, alpha, beta):
-    """
-    N et M résultants ELU — section circulaire.
-    """
     g = np.hypot(alpha, beta)
 
     if g < 1e-14:
-        # Compression pure — sigma uniforme
-        eps_u = min(max(eps0, 0.0), float(eps_cu2(fck)))
+        eps_u = max(eps0, 0.0)
         e2    = float(eps_c2(fck))
         n     = float(eps_n(fck))
         if eps_u >= e2:
             sig = fcd
         else:
             sig = fcd * (1.0 - (1.0 - eps_u / float(e2))**n)
+        if eps0 <= 0: sig = 0.0
+        
         N = sig * np.pi * R**2
         As_i   = As_total / n_barres
-        angles = np.linspace(0, 2*np.pi, n_barres, endpoint=False)
-        for a in angles:
-            eps_s = eps0
-            sig_s = sigma_s_palier1(fyd, k, eps_uk, eps_ud, eps_s, a_com)
+        for i in range(n_barres):
+            sig_s = sigma_s_palier1(fyd, k, eps_uk, eps_ud, eps0, a_com)
             N    += sig_s * As_i
         return N, 0.0
 
     N_b, M_b = _NM_beton_ELU(R, eps0, g, fcd, fck)
 
-    # Aciers
     As_i   = As_total / n_barres
     angles = np.linspace(0, 2*np.pi, n_barres, endpoint=False)
     Ns = Ms = 0.0
@@ -218,80 +173,81 @@ def NM_circulaire_ELU(R, ra, As_total, n_barres,
 
 
 # ─────────────────────────────────────────────────────────────
-# Solveurs
+# Solveurs Corrigés (Continuité C0/C1 assurée)
 # ─────────────────────────────────────────────────────────────
 
-def solve_NM_circulaire_ELS(R, ra, As_total, n_barres, C,
-                             Nobj, Mobj):
-    """
-    Résout eps0, g pour (N=Nobj, M=Mobj) en ELS.
-    g = |grad eps| = intensité de la flexion
-    """
+def solve_NM_circulaire_ELS(R, ra, As_total, n_barres, C, Nobj, Mobj):
     x0 = np.array([0.0, 0.001])
 
     def residuals(x):
-        eps0, g = x
-        if g < 0:
-            return [1e10, 1e10]
-        N, M = NM_circulaire_ELS(R, ra, As_total, n_barres, C, eps0, alpha=g, beta=0.0)
-        return [N - Nobj, M - Mobj]
+        eps0, kappa = x  # CORRECTION 2 : Changement de variable (courbure signée)
+        g = abs(kappa)
+        N, M_u = NM_circulaire_ELS(R, ra, As_total, n_barres, C, eps0, alpha=g, beta=0.0)
+        M_x = M_u * np.sign(kappa) # Rend la fonction parfaitement lisse autour de g=0
+        return [N - Nobj, M_x - Mobj]
 
     sol = fsolve(residuals, x0, xtol=1e-6)
-    return sol   # (eps0, g)
+    return sol[0], abs(sol[1])
 
 
 def solve_NM_circulaire_ELU(R, ra, As_total, n_barres,
                              fck, fcd, fyd, k, eps_uk, eps_ud, a_com,
                              Nobj, Mobj):
-    """
-    Résout eps0, g pour (N=Nobj, M=Mobj) en ELU.
-    """
     x0 = np.array([0.0, 0.1])
 
     def residuals(x):
-        eps0, g = x
-        if g < 0:
-            return [1e10, 1e10]
-        N, M = NM_circulaire_ELU(R, ra, As_total, n_barres,
+        eps0, kappa = x  # CORRECTION 2 : Idem pour l'ELU
+        g = abs(kappa)
+        N, M_u = NM_circulaire_ELU(R, ra, As_total, n_barres,
                                   fck, fcd, fyd, k, eps_uk, eps_ud, a_com,
                                   eps0, alpha=g, beta=0.0)
-        return [N - Nobj, M - Mobj]
+        M_x = M_u * np.sign(kappa)
+        return [N - Nobj, M_x - Mobj]
 
     sol = fsolve(residuals, x0, xtol=1e-6)
-    return sol   # (eps0, g)
+    return sol[0], abs(sol[1])
 
 
 # ─────────────────────────────────────────────────────────────
-# Diagramme d'interaction N-M (courbe enveloppe)
+# Diagramme d'interaction N-M (Courbe enveloppe complète)
 # ─────────────────────────────────────────────────────────────
 
 def interaction_NM_circulaire_ELU(R, ra, As_total, n_barres,
-                                   fck, fcd, fyd, k, eps_uk, eps_ud, a_com,
-                                   n_pts=60):
+                                  fck, fcd, fyd, k, eps_uk, eps_ud, a_com,
+                                  n_pts=60):
     """
-    Trace le diagramme d'interaction N-M en balayant le plan de déformation.
-    Retourne deux tableaux N, M (demi-diagramme, M >= 0 par symétrie).
+    CORRECTION 3 : Balayage complet de tous les pivots EC2 (A, B et C)
     """
     ecu2 = float(eps_cu2(fck))
-    e2   = float(eps_c2(fck))
-    eyd  = fyd / 200000.0       # déformation plastification acier
 
     N_list = []
     M_list = []
 
-    # Balayage du pivot : eps_max = ecu2 fixé, eps_min varie de -eyd à ecu2
-    # puis eps_min = -eyd fixé, eps_max varie
-    eps_max_vals = np.full(n_pts, ecu2)
-    eps_min_vals = np.linspace(-eyd * 2, ecu2, n_pts)
+    # --- ZONE 1 : Pivot A (Rupture Acier en traction) ---
+    # La fibre d'acier la plus tendue (à u = -ra) est fixée à -eps_ud.
+    # On fait varier la déformation de la fibre supérieure de -eps_ud à ecu2.
+    eps_min_z1 = np.full(n_pts, -eps_ud)
+    eps_max_z1 = np.linspace(-eps_ud, ecu2, n_pts)
 
-    for eps_min, eps_max in zip(eps_min_vals, eps_max_vals):
+    # --- ZONE 2 : Pivot B & C (Écrasement du Béton) ---
+    # La fibre supérieure du béton (à u = R) est fixée à ecu2.
+    # On fait varier la déformation inférieure de -eps_ud à ecu2 (pure compression).
+    eps_max_z2 = np.full(n_pts, ecu2)
+    eps_min_z2 = np.linspace(-eps_ud, ecu2, n_pts)
+
+    # Fusion des deux zones pour une courbe complète continue
+    eps_min_all = np.concatenate([eps_min_z1, eps_min_z2])
+    eps_max_all = np.concatenate([eps_max_z1, eps_max_z2])
+
+    for eps_min, eps_max in zip(eps_min_all, eps_max_all):
         eps0 = 0.5 * (eps_max + eps_min)
-        g    = 0.5 * (eps_max - eps_min) / R   # gradient si axe u = x
-        if g < 0:
-            continue
-        N, M = NM_circulaire_ELU(R, ra, As_total, n_barres,
-                                  fck, fcd, fyd, k, eps_uk, eps_ud, a_com,
-                                  eps0, alpha=g, beta=0.0)
+        g    = 0.5 * (eps_max - eps_min) / R  
+        
+        if g < 1e-12:
+            N, M = NM_circulaire_ELU(R, ra, As_total, n_barres, fck, fcd, fyd, k, eps_uk, eps_ud, a_com, eps0, 0.0, 0.0)
+        else:
+            N, M = NM_circulaire_ELU(R, ra, As_total, n_barres, fck, fcd, fyd, k, eps_uk, eps_ud, a_com, eps0, alpha=g, beta=0.0)
+            
         N_list.append(N)
         M_list.append(abs(M))
 
