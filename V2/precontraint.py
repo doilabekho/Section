@@ -972,10 +972,10 @@ def _integrer_polygone(contour, eps0, alpha, beta, mode, C=None, fck=None, fcd=N
     if len(poly_c) < 3:
         return np.zeros(4)
 
-    res = np.zeros(4)
+    
 
     if mode == 'ELS':
-
+        res = np.zeros(4)
         edges = np.column_stack([poly_c, np.roll(poly_c, -1, axis=0)])
 
         for xa, ya, xb, yb in edges:
