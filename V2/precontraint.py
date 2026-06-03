@@ -1669,7 +1669,7 @@ def solve_GG_ELU_pararect(
             fck, fcd, fyd, k, eps_uk, eps_ud,
             p_pre, s_pre, sig_p, fpd, Ep, kp, eps_ukp, eps_udp,
             n, NQP, MYQP, MZQP, roh,
-            ep[0], ep[1], ep[2])
+            *eps)
 
         return np.array([N-Nobj, My-Myobj, Mz-Mzobj])
     def jacobian(eps, h=1e-6):
