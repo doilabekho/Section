@@ -1665,7 +1665,7 @@ def solve_GG_ELU_pararect(
 
 
 
-    x0 = np.array(0.5,0,0.1)
+    x0 = np.array([0.0, 0.1, 0.0])
 
     def resid(ep):
         N, My, Mz = calculer_N_My_Mz_ELU_pararect(
