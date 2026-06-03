@@ -1663,17 +1663,10 @@ def solve_GG_ELU_pararect(
 
     from scipy.optimize import least_squares
 
-    targets = np.array([Nobj, Myobj, Mzobj], float)
 
-    # ✅ 1. excellent point initial = solution QP
-    res_qp = solve_GG_QP(
-        polygon1, evi, p_acier, s_acier, a_com, n,
-        p_pre, s_pre, sig_p, fpd, Ep, kp,
-        eps_ukp, eps_udp, NQP, MYQP, MZQP)
 
-    x0 = np.array(res_qp, dtype=float)
+    x0 = np.array(0.5,0,0.1)
 
-    # ✅ 2. résidu normalisé
     def resid(ep):
         N, My, Mz = calculer_N_My_Mz_ELU_pararect(
             polygon1, evi, p_acier, s_acier, a_com,
@@ -1682,34 +1675,22 @@ def solve_GG_ELU_pararect(
             n, NQP, MYQP, MZQP, roh,
             ep[0], ep[1], ep[2])
 
-        r = np.array([N - Nobj, My - Myobj, Mz - Mzobj])
-
-        scale = np.maximum(np.abs(targets), 1.0)
-        return r / scale
-
-    # ✅ 3. solveur robuste
-    sol = least_squares(
-        resid,
-        x0,
-        method='trf',        # robuste
-        loss='soft_l1',      # robuste aux discontinuités
-        xtol=1e-8,
-        ftol=1e-8,
-        gtol=1e-8,
-        max_nfev=200
-    )
-
-    # ✅ 4. fallback si échec
-    if not sol.success:
-        sol = least_squares(
-            resid,
-            x0,
-            method='dogbox',
-            loss='soft_l1',
-            max_nfev=500
-        )
-
-    return sol.x
+        return np.array([N-Nobj, My-Myobj, Mz-Mzobj])
+    def jacobian(eps, h=1e-6):
+        J = np.empty((3,3)); r0 = residuals(eps)
+        for i in range(3):
+            dh = np.zeros(3); dh[i] = h
+            J[:,i] = (residuals(eps+dh) - r0) / h
+        return J
+    result = root(residuals, x0, jac=jacobian, method='hybr',
+                  tol=1e-6, options={'maxfev': 1000})
+    #result = root(residuals, x0, method='df-sane',
+    #          tol=1e-6, options={'maxfev': 2000, 'fatol': 1e-6})
+    #from scipy.optimize import fsolve
+    #sol = fsolve(residuals, x0, xtol=1e-6)
+    #result = root(residuals, x0, method='krylov',
+    #          tol=1e-5, options={'maxiter': 800})
+    return result.x
 
 
 
