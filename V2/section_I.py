@@ -5,6 +5,7 @@ from scipy.optimize import root, fsolve, least_squares, root_scalar
 from scipy.spatial import Delaunay
 from matplotlib.path import Path
 from xlwings import func
+from scipy.special import roots_legendre
 
 from beton import *   # ← fonctionne en local et sur GitHub
 from acier import *   # ← fonctionne en local et sur GitHub	
@@ -155,14 +156,14 @@ def calculer_NM_beton(pts, eps0, beta, mode='ELS', n_els=15.0, fck=30.0, fcd=20.
     if mode == 'ELS':
         C_els = 200000.0 / (float(n_els) * 1000.0)
         e2, expo_elu = 0.0, 2.0
+        n_gauss = 3
     else:  # mode == 'ELU'
         e2 = eps_c2(fck)
         expo_elu = eps_n(fck)
-        
+        n_gauss = 5
 
-    # Quadrature de Gauss-Legendre à 3 points
-    gauss_points = np.array([-np.sqrt(3/5), 0.0, np.sqrt(3/5)])
-    gauss_weights = np.array([5/9, 8/9, 5/9])
+    gauss_points, gauss_weights = roots_legendre(n_gauss)
+
     
     Nc = 0.0
     Mc_y = 0.0
