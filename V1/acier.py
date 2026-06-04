@@ -93,7 +93,18 @@ def eps_s_lin(sig_s_array):
     
     # epsilon = (sigma / E) * 1000 pour avoir des mm/m
     return 1000 * sig / 200000	
-	
+@func
+def eps_s_lin(sig_s_array):
+    """
+    Version vectorisée : renvoie la déformation eps_s (en mm/m).
+    Loi élastique linéaire infinie (E = 200 000 MPa).
+    sig_s_array : contrainte acier (MPa).
+    """
+    # Conversion en array NumPy
+    sig = np.asarray(sig_s_array)
+    
+    # epsilon = (sigma / E) * 1000 pour avoir des mm/m
+    return 1000 * sig / 200000		
 @func
 def sigma_s_lin1(eps_s, a_com):
     """
