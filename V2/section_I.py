@@ -380,6 +380,12 @@ def M_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
 # ════════════════════════════════════════════════════════════════════════════
 # SOLVEUR ELS — (N, M) → (ε₀, β)
 # ════════════════════════════════════════════════════════════════════════════
+@func
+def calculer_N_M(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
+    
+    N =  N_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
+    M =  M_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
+    return N, M
 
 def _residuals_ELS(ep, b, h, bs, hs, gs, bi, hi, gi,
                     asup, ainf, esup, einf, n,
