@@ -378,43 +378,200 @@ def M_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 6. SOLVEUR ELS — (N, M) → (ε₀, β)
+# SOLVEUR ELS — (N, M) → (ε₀, β)
 # ════════════════════════════════════════════════════════════════════════════
 
-@func
-def calculer_N_M(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta):
-    
-    N =  N_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
-    M =  M_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, eps0, beta)
-    return N, M
+def _residuals_ELS(ep, b, h, bs, hs, gs, bi, hi, gi,
+                    asup, ainf, esup, einf, n,
+                    Nobj, Mobj):
+    """Résidu [N−Nobj, M−Mobj] pour un vecteur ep = [ε₀, β]."""
+    N, M = calculer_N_M(
+        b, h, bs, hs, gs, bi, hi, gi,
+        asup, ainf, esup, einf, n,
+        ep[0], ep[1]
+    )
+    return np.array([N - Nobj, M - Mobj])
+
+
+def _grille_x0_ELS(Nobj, Mobj, h):
+    """
+    Génère des points de départ couvrant le domaine ELS :
+      ε₀ ∈ [−2.5, +2.5] ‰   (traction pure → compression modérée, acier limite ~fyk/Es)
+      β  ∈ [−3.5/h, +3.5/h] ‰/mm
+    """
+    eps0_vals = [-2.0, -0.5, 0.0, 0.5, 1.5]
+    beta_vals = [-2.5/h, 0.0, 2.5/h]
+    beta_est  = 2.5/h if Mobj > 0 else -2.5/h
+    eps0_est  = 0.0
+    points = [(eps0_est, beta_est)]
+    for e in eps0_vals:
+        for b_ in beta_vals:
+            points.append((e, b_))
+    return [np.array([e, b_]) for e, b_ in points]
+
+
+def _solve_hybr_ELS(resid_fn, x0):
+    try:
+        sol = root(
+            resid_fn, x0,
+            jac=lambda ep: _jacobian_centre(ep, resid_fn),
+            method="hybr",
+            tol=1e-6,
+            options={"maxfev": 600}
+        )
+        if sol.success and np.max(np.abs(sol.fun)) < 1e-3:
+            return sol.x
+    except Exception:
+        pass
+    return None
+
+
+def _solve_trf_ELS(resid_fn, x0):
+    try:
+        sol = least_squares(
+            resid_fn, x0,
+            jac=lambda ep: _jacobian_centre(ep, resid_fn),
+            method='trf',
+            xtol=1e-6, ftol=1e-6, gtol=1e-6,
+            max_nfev=400
+        )
+        if np.max(np.abs(sol.fun)) < 1e-3:
+            return sol.x
+    except Exception:
+        pass
+    return None
+
+
+def _solve_multistart_ELS(resid_fn, Nobj, Mobj, h):
+    best_x, best_err = None, np.inf
+    for x0 in _grille_x0_ELS(Nobj, Mobj, h):
+        x = _solve_hybr_ELS(resid_fn, x0)
+        if x is None:
+            x = _solve_trf_ELS(resid_fn, x0)
+        if x is not None:
+            err = float(np.max(np.abs(resid_fn(x))))
+            if err < best_err:
+                best_err, best_x = err, x
+    if best_err < 1e-2:
+        return best_x
+    return None
+
+
+def _solve_bissection_ELS(resid_fn, Nobj, Mobj, h):
+    """Filet de sécurité ultime : bissection séquentielle β puis ε₀."""
+    from scipy.optimize import brentq as _brentq
+    eps_lim = 2.5  # ‰ — plage large pour rester couvrant
+
+    def beta_from_eps0(eps0):
+        def fM(beta):
+            return float(resid_fn(np.array([eps0, beta]))[1])
+        try:
+            return _brentq(fM, -eps_lim/h, eps_lim/h, xtol=1e-8, maxiter=100)
+        except ValueError:
+            return None
+
+    def fN(eps0):
+        beta = beta_from_eps0(eps0)
+        if beta is None:
+            return np.nan
+        return float(resid_fn(np.array([eps0, beta]))[0])
+
+    eps0_grid = np.linspace(-eps_lim, eps_lim, 30)
+    fN_vals = [fN(e) for e in eps0_grid]
+
+    for i in range(len(fN_vals) - 1):
+        f1, f2 = fN_vals[i], fN_vals[i+1]
+        if np.isnan(f1) or np.isnan(f2):
+            continue
+        if f1 * f2 < 0:
+            try:
+                eps0_sol = _brentq(fN, eps0_grid[i], eps0_grid[i+1],
+                                    xtol=1e-7, maxiter=80)
+                beta_sol = beta_from_eps0(eps0_sol)
+                if beta_sol is not None:
+                    x = np.array([eps0_sol, beta_sol])
+                    if np.max(np.abs(resid_fn(x))) < 1e-2:
+                        return x
+            except Exception:
+                continue
+    return None
+
+
 @func
 def solve_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, Nobj, Mobj):
-    x0 = np.array([0., 0.001])  # Valeurs initiales [eps0, beta]
+    """
+    Résout (N = Nobj, M = Mobj) → (ε₀, β) en ELS.
 
-    def residuals(eps):
-        N, M = calculer_N_M(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, *eps)
-        return np.array([N - Nobj, M - Mobj])
+    Ordre de résolution :
+      0. Cas analytique "section entièrement tendue" (fermé, instantané)
+      1. root/hybr
+      2. least_squares/trf
+      3. Multi-start (grille de points de départ)
+      4. Bissection 1D (filet ultime)
 
-    #result = fsolve(residuals, x0)
-    #return result
-    def jacobian(eps, h=1e-6):
-        """Jacobien par différences finies centrées (3×3)."""
-        J = np.empty((2, 2))
-        r0 = residuals(eps)
-        for i in range(2):
-            dh = np.zeros(2); dh[i] = h
-            J[:, i] = (residuals(eps + dh) - r0) / h
-        return J
+    Retourne [ε₀, β] ou [nan, nan] si aucune méthode ne converge.
+    Convention : eps(y) = eps0 + beta*(y - yG), y positif vers le bas depuis la fibre sup.
+    """
 
-    result = root(
-        residuals,
-        x0,
-        jac=jacobian,
-        method= "hybr", #"hybr",  # ou "lm"
-        tol=1e-5,
-        options={"maxfev": 200}
+    yG = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
+
+    cond_M_pos = (Mobj > 0 and Mobj / (Nobj - 1e-15) <= -(yG - einf - esup))
+
+    # ── Étape 0 : cas analytique (section tout tendue) ─────────────────────
+    if Nobj < 0 and asup * ainf > 0 and cond_M_pos:
+        y_sup = esup
+        y_inf = h - einf
+        a = y_sup - yG
+        c = y_inf - yG
+        d = a - c
+        if abs(d) > 1e-9:
+            F_sup = (Mobj - Nobj * c) / d
+            F_inf = Nobj - F_sup
+
+            sigma_sup = F_sup / asup * 10000
+            sigma_inf = F_inf / ainf * 10000
+
+            eps_sup = sigma_sup / 200000
+            eps_inf = sigma_inf / 200000
+
+            beta = (eps_sup - eps_inf) / (a - c)
+            eps0 = eps_sup - beta * a
+
+            sol = np.array([eps0, beta])
+            N_chk, M_chk = calculer_N_M(b, h, bs, hs, gs, bi, hi, gi,
+                                         asup, ainf, esup, einf, n, *sol)
+            if (abs(N_chk - Nobj) < 1e-3 * max(1, abs(Nobj)) and
+                    abs(M_chk - Mobj) < 1e-3 * max(1, abs(Mobj))):
+                return sol
+            # sinon on continue vers la cascade numérique ci-dessous
+
+    # ── Cascade numérique ────────────────────────────────────────────────
+    def resid(ep):
+        return _residuals_ELS(
+            ep, b, h, bs, hs, gs, bi, hi, gi,
+            asup, ainf, esup, einf, n,
+            Nobj, Mobj
         )
-    return result.x
+
+    x0 = np.array([0., 0.001])
+
+    x = _solve_hybr_ELS(resid, x0)
+    if x is not None:
+        return x
+
+    x = _solve_trf_ELS(resid, x0)
+    if x is not None:
+        return x
+
+    x = _solve_multistart_ELS(resid, Nobj, Mobj, h)
+    if x is not None:
+        return x
+
+    x = _solve_bissection_ELS(resid, Nobj, Mobj, h)
+    if x is not None:
+        return x
+
+    return np.array([np.nan, np.nan])
 
 # ════════════════════════════════════════════════════════════════════════════
 # 7. Résultats ELS — Calculs contrainte
