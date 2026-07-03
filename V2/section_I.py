@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.integrate 
 from scipy.integrate import quad
-from scipy.optimize import root, fsolve, least_squares, root_scalar
+from scipy.optimize import root, fsolve, least_squares, root_scalar, brentq
 from scipy.spatial import Delaunay
 from matplotlib.path import Path
 from xlwings import func
