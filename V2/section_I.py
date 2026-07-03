@@ -519,38 +519,7 @@ def solve_I_ELS(b, h, bs, hs, gs, bi, hi, gi, asup, ainf, esup, einf, n, Nobj, M
     Convention : eps(y) = eps0 + beta*(y - yG), y positif vers le bas depuis la fibre sup.
     """
 
-    yG = Nc_Gy_ELS(b, h, bs, hs, gs, bi, hi, gi)
-
-    cond_M_pos = (Mobj > 0 and Mobj / (Nobj - 1e-15) <= -(yG - einf - esup))
-
-    # ── Étape 0 : cas analytique (section tout tendue) ─────────────────────
-    if Nobj < 0 and asup * ainf > 0 and cond_M_pos:
-        y_sup = esup
-        y_inf = h - einf
-        a = y_sup - yG
-        c = y_inf - yG
-        d = a - c
-        if abs(d) > 1e-9:
-            F_sup = (Mobj - Nobj * c) / d
-            F_inf = Nobj - F_sup
-
-            sigma_sup = F_sup / asup * 10000
-            sigma_inf = F_inf / ainf * 10000
-
-            eps_sup = sigma_sup / 200000
-            eps_inf = sigma_inf / 200000
-
-            beta = (eps_sup - eps_inf) / (a - c)
-            eps0 = eps_sup - beta * a
-
-            sol = np.array([eps0, beta])
-            N_chk, M_chk = calculer_N_M(b, h, bs, hs, gs, bi, hi, gi,
-                                         asup, ainf, esup, einf, n, *sol)
-            if (abs(N_chk - Nobj) < 1e-3 * max(1, abs(Nobj)) and
-                    abs(M_chk - Mobj) < 1e-3 * max(1, abs(Mobj))):
-                return sol
-            # sinon on continue vers la cascade numérique ci-dessous
-
+    
     # ── Cascade numérique ────────────────────────────────────────────────
     def resid(ep):
         return _residuals_ELS(
